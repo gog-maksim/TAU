@@ -93,7 +93,7 @@ class ParkingApp(QMainWindow):
         self.tableCars.setItem(row, 3, QTableWidgetItem(str(hours)))
         self.tableCars.setItem(row, 4, QTableWidgetItem(f"{cost} руб."))
         self.tableCars.setItem(row, 5, QTableWidgetItem(f"{discount}%"))
-
+        # NETS
         # Красиво подсвечиваем статус оплаты
         status_item = QTableWidgetItem(status)
         if status == "Задолженность":
