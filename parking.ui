@@ -6,109 +6,426 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>850</width>
-    <height>500</height>
+    <width>1250</width>
+    <height>700</height>
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Программный модуль «Автостоянка»</string>
+   <string>Автостоянка — v2 (ТЗ п.7)</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">/* === СВЕТЛАЯ ТЕМА — принудительно читаемый текст === */
+QMainWindow { background: #f4f6f9; }
+QWidget { color: #1a2b4c; }
+QLabel { color: #1a2b4c; }
+QGroupBox { font-weight: bold; color: #1a2b4c; border: 1px solid #d0d7e3; border-radius: 6px; margin-top: 12px; padding-top: 12px; background: white; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #1a2b4c; }
+QLineEdit { background: white; color: #1a2b4c; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; selection-background-color: #d6e4ff; selection-color: #1a2b4c; }
+QLineEdit:focus { border: 1px solid #3b82f6; }
+QComboBox { background: white; color: #1a2b4c; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; }
+QComboBox QAbstractItemView { background: white; color: #1a2b4c; selection-background-color: #eef2f7; selection-color: #1a2b4c; border: 1px solid #cbd5e1; }
+QComboBox::drop-down { border: none; width: 24px; }
+QTableWidget { background: white; color: #1a2b4c; border: 1px solid #d0d7e3; border-radius: 6px; gridline-color: #eef2f7; selection-background-color: #e3edff; selection-color: #1a2b4c; alternate-background-color: #f8fafc; }
+QHeaderView::section { background: #eef2f7; color: #1a2b4c; padding: 6px; border: none; border-right: 1px solid #d0d7e3; font-weight: bold; font-size: 12px; }
+QTableWidget::item { color: #1a2b4c; padding: 4px; }
+QTableWidget::item:selected { background: #dbeafe; color: #1a2b4c; }
+QProgressBar { border: 1px solid #d0d7e3; border-radius: 5px; background: #eef2f7; text-align: center; color: #1a2b4c; }
+QProgressBar::chunk { border-radius: 4px; }
+QStatusBar { background: #eef2f7; color: #1a2b4c; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #f1f5f9; border: none; }
+</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="horizontalLayout">
+   <layout class="QHBoxLayout" name="mainHLayout">
+    <property name="spacing">
+     <number>12</number>
+    </property>
+    <property name="leftMargin">
+     <number>12</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>12</number>
+    </property>
+    <property name="bottomMargin">
+     <number>12</number>
+    </property>
+    <!-- Левая область -->
     <item>
-     <layout class="QVBoxLayout" name="formLayout">
+     <widget class="QFrame" name="leftPanel">
+      <property name="minimumSize">
+       <size>
+        <width>320</width>
+        <height>0</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>340</width>
+        <height>16777215</height>
+       </size>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::StyledPanel</enum>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QFrame#leftPanel { background: white; border: 1px solid #d0d7e3; border-radius: 8px; }</string>
+      </property>
+      <layout class="QVBoxLayout" name="leftLayout">
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <property name="leftMargin">
+        <number>16</number>
+       </property>
+       <property name="topMargin">
+        <number>16</number>
+       </property>
+       <property name="rightMargin">
+        <number>16</number>
+       </property>
+       <property name="bottomMargin">
+        <number>16</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="labelLeftTitle">
+         <property name="text">
+          <string>Управление операцией</string>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">font-size: 16px; font-weight: bold; color: #1a2b4c;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_plate">
+         <property name="text">
+          <string>Гос. регистрационный номер *</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="input_plate">
+         <property name="placeholderText">
+          <string>А123ВС 799</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_brand2">
+         <property name="text">
+          <string>Марка / модель *</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="input_brand">
+         <property name="placeholderText">
+          <string>Toyota Camry</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_owner2">
+         <property name="text">
+          <string>ФИО владельца *</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="input_owner">
+         <property name="placeholderText">
+          <string>Иванов И.И.</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_phone">
+         <property name="text">
+          <string>Номер телефона</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="input_phone">
+         <property name="placeholderText">
+          <string>+7 900 000-00-00</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_place">
+         <property name="text">
+          <string>Парковочное место (1–100) *</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="combo_place"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_discount2">
+         <property name="text">
+          <string>Скидка</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="combo_discount">
+         <item>
+          <property name="text">
+           <string>Нет (0%)</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Пенсионер (10%)</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Постоянный клиент (20%)</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ветеран (50%)</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_hint">
+         <property name="text">
+          <string>Часы и статус оплаты считаются автоматически.</string>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: #6b7a90; font-size: 11px; font-style: italic;</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btn_add">
+         <property name="minimumHeight">
+          <number>42</number>
+         </property>
+         <property name="text">
+          <string>✓  Регистрация въезда</string>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton { background-color: #27ae60; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; padding: 8px; } QPushButton:hover { background-color: #219653; }</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btn_remove">
+         <property name="minimumHeight">
+          <number>42</number>
+         </property>
+         <property name="text">
+          <string>⟶  Оформление выезда</string>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton { background-color: #2c3e50; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; padding: 8px; } QPushButton:hover { background-color: #1a252f; }</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacerLeft">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>10</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_info">
+         <property name="text">
+          <string>* — обязательные поля
+Тариф: 100 ₽/час</string>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: #95a0b8; font-size: 11px;</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <!-- Правая область -->
+    <item>
+     <layout class="QVBoxLayout" name="rightLayout">
+      <property name="spacing">
+       <number>10</number>
+      </property>
       <item>
-       <widget class="QLabel" name="label_brand">
+       <widget class="QLabel" name="labelRightTitle">
         <property name="text">
-         <string>Марка автомобиля:</string>
+         <string>Мониторинг стоянки</string>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 16px; font-weight: bold; color: #1a2b4c;</string>
         </property>
        </widget>
       </item>
       <item>
-       <widget class="QLineEdit" name="input_brand"/>
-      </item>
-      <item>
-       <widget class="QLabel" name="label_owner">
-        <property name="text">
-         <string>Владелец (ФИО):</string>
+        <widget class="QTableWidget" name="tableCars">
+        <property name="minimumHeight">
+         <number>280</number>
         </property>
+        <property name="alternatingRowColors">
+         <bool>true</bool>
+        </property>
+        <column>
+         <property name="text">
+          <string>Гос.номер</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Марка/Модель</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>ФИО</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Телефон</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Место</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Время въезда</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Длительность</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Стоимость</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Скидка</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>Статус</string>
+         </property>
+        </column>
        </widget>
       </item>
       <item>
-       <widget class="QLineEdit" name="input_owner"/>
-      </item>
-      <item>
-       <widget class="QLabel" name="label_hours">
-        <property name="text">
-         <string>Часов на стоянке:</string>
+       <widget class="QGroupBox" name="groupMonitoring">
+        <property name="title">
+         <string>Занятость — 100 мест</string>
         </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLineEdit" name="input_hours"/>
-      </item>
-      <item>
-       <widget class="QLabel" name="label_discount">
-        <property name="text">
-         <string>Скидка:</string>
+        <property name="styleSheet">
+         <string notr="true">QGroupBox { background: white; }</string>
         </property>
+        <layout class="QVBoxLayout" name="monitoringLayout">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <item>
+          <layout class="QHBoxLayout" name="occupancyRow">
+           <item>
+            <widget class="QLabel" name="label_occupancy">
+             <property name="text">
+              <string>Занято: 0 / 100  •  Свободно: 100</string>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">font-weight: bold; font-size: 13px; color: #2c3e50;</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="hSpacerOcc">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_legend">
+             <property name="text">
+              <string>■ занято   □ свободно   ▣ выбрано в форме</string>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">color: #6b7a90; font-size: 11px;</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QProgressBar" name="progressOccupancy">
+           <property name="maximum">
+            <number>100</number>
+           </property>
+           <property name="value">
+            <number>0</number>
+           </property>
+           <property name="textVisible">
+            <bool>false</bool>
+           </property>
+           <property name="maximumHeight">
+            <number>10</number>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">QProgressBar { border: 1px solid #d0d7e3; border-radius: 5px; background: #eef2f7; } QProgressBar::chunk { background: #27ae60; border-radius: 4px; }</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QWidget" name="gridContainer">
+           <property name="minimumHeight">
+            <number>220</number>
+           </property>
+           <layout class="QGridLayout" name="gridParking">
+            <property name="spacing">
+             <number>4</number>
+            </property>
+           </layout>
+          </widget>
+         </item>
+        </layout>
        </widget>
-      </item>
-      <item>
-       <widget class="QComboBox" name="combo_discount">
-        <item><property name="text"><string>Нет (0%)</string></property></item>
-        <item><property name="text"><string>Пенсионер (10%)</string></property></item>
-        <item><property name="text"><string>Постоянный клиент (20%)</string></property></item>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel" name="label_status">
-        <property name="text">
-         <string>Статус оплаты:</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QComboBox" name="combo_status">
-        <item><property name="text"><string>Оплачено</string></property></item>
-        <item><property name="text"><string>Задолженность</string></property></item>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="btn_add">
-        <property name="text">
-         <string>Добавить авто на стоянку</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <spacer name="verticalSpacer">
-        <property name="orientation">
-         <enum>Qt::Vertical</enum>
-        </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>20</width>
-          <height>40</height>
-         </size>
-        </property>
-       </spacer>
       </item>
      </layout>
     </item>
-    <item>
-     <widget class="QTableWidget" name="tableCars">
-      <column><property name="text"><string>Марка</string></property></column>
-      <column><property name="text"><string>Владелец</string></property></column>
-      <column><property name="text"><string>Время въезда</string></property></column>
-      <column><property name="text"><string>Время (ч)</string></property></column>
-      <column><property name="text"><string>Стоимость</string></property></column>
-      <column><property name="text"><string>Скидка</string></property></column>
-      <column><property name="text"><string>Статус</string></property></column>
-     </widget>
-    </item>
    </layout>
   </widget>
+  <widget class="QStatusBar" name="statusbar"/>
  </widget>
  <resources/>
  <connections/>
