@@ -3,3 +3,6 @@
 venv/
 __pycache__/
 *.pyc
+parking_base.json
+parking_base_v2.json
+preview_*.png
