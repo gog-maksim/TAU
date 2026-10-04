@@ -1,4 +1,6 @@
 import sys
+import json
+import os
 import math
 import re
 from datetime import datetime
@@ -10,9 +12,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPalette, QColor
-
-from db_config import get_connection
-from db_init import init_database
 
 
 HOURLY_RATE = 100
@@ -26,7 +25,6 @@ QGroupBox { font-weight: bold; color: #1a2b4c; }
 QLineEdit, QSpinBox { background: white; color: #1a2b4c; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; }
 QSpinBox::up-button, QSpinBox::down-button { background: #eef2f7; border: 1px solid #cbd5e1; }
 """
-
 
 class CheckoutDialog(QDialog):
     """Диалог оформления выезда по п.7.3 ТЗ"""
@@ -156,8 +154,11 @@ class CheckoutDialog(QDialog):
         self.accept()
 
     def _on_paid(self):
+        # если внесено меньше — считаем что остаток доплачен сейчас
         self.additional_payment = self.spin_pay.value()
+        # для демо: если не хватает — предлагаем подтвердить как долг
         if self.additional_payment < self.cost:
+            # если нажал "Подтвердить выезд" без полной оплаты — трактуем как долг
             self.result_action = "debt"
         else:
             self.result_action = "paid"
@@ -183,11 +184,12 @@ def apply_light_palette(app: QApplication):
 
 
 class ParkingApp(QMainWindow):
-    """Основной класс — работа с PostgreSQL"""
+    """Основной класс — перенесен из v2 по ТЗ п.7"""
     def __init__(self):
         super().__init__()
         uic.loadUi("parking.ui", self)
 
+        self.DATA_FILE = "parking_base_v2.json"
         self.HOURLY_RATE = HOURLY_RATE
 
         # Настройка таблицы
@@ -209,7 +211,7 @@ class ParkingApp(QMainWindow):
         self.tableCars.itemSelectionChanged.connect(self._on_table_select)
 
         # Сетка 10x10
-        self.place_buttons = {}
+        self.place_buttons = {}  # place:int -> QPushButton
         self._build_grid()
 
         # Таймер авто-пересчета каждую минуту
@@ -217,13 +219,15 @@ class ParkingApp(QMainWindow):
         self.timer.timeout.connect(self.refresh_calculations)
         self.timer.start(60_000)
 
-        self.load_data_from_db()
+        self.load_data_from_file()
         self.refresh_calculations()
         self.update_monitoring()
 
     # ---------- Grid ----------
     def _build_grid(self):
+        # очистить если уже есть
         layout = self.gridParking
+        # удалить старые если есть (на случай перезапуска)
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
@@ -248,13 +252,16 @@ class ParkingApp(QMainWindow):
         return "QPushButton{background:white; color:#2c3e50; border-radius:6px; font-size:11px; border:1px solid #d0d7e3} QPushButton:hover{background:#eaf2ff}"
 
     def _on_grid_clicked(self, place):
+        # клик по сетке — выбрать место в combo если свободно
         occupied = self._occupied_places()
         if place in occupied:
+            # подсветить строку с этим местом
             for row in range(self.tableCars.rowCount()):
                 if self.tableCars.item(row, 4).text() == str(place):
                     self.tableCars.selectRow(row)
                     break
             return
+        # свободно — выбрать
         idx = self.combo_place.findText(str(place))
         if idx >= 0:
             self.combo_place.setCurrentIndex(idx)
@@ -291,6 +298,7 @@ class ParkingApp(QMainWindow):
         delta_h = (datetime.now() - t_entry).total_seconds() / 3600
         hours = max(1, math.ceil(delta_h))
         cost = int(hours * self.HOURLY_RATE * (1 - discount_percent/100))
+        # красивая длительность
         if hours < 24:
             dur = f"{hours} ч"
         else:
@@ -312,6 +320,7 @@ class ParkingApp(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Заполните обязательные поля: гос.номер, марка, ФИО, место.")
             return
 
+        # простая валидация госномера (не строгая)
         if len(plate) < 5:
             QMessageBox.warning(self, "Ошибка", "Гос.номер выглядит слишком коротким.")
             return
@@ -332,75 +341,33 @@ class ParkingApp(QMainWindow):
             QMessageBox.warning(self, "Дубликат", f"Автомобиль с номером {plate} уже на стоянке.")
             return
 
+        # телефон — опционально, но если введен — проверим
         if phone and len(re.sub(r"\D", "", phone)) < 7:
             QMessageBox.warning(self, "Ошибка", "Номер телефона указан некорректно.")
             return
 
+        # скидка
         m = re.search(r"(\d+)%", discount_text)
         discount = int(m.group(1)) if m else 0
 
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        try:
-            self._save_car_to_db(plate, brand, owner, phone, place, time_str, discount)
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка БД", f"Не удалось сохранить данные:\n{e}")
-            return
-
+        # вставляем — длительность/стоимость посчитаются в refresh
         self.insert_row_to_table(plate, brand, owner, phone, place, time_str, discount)
 
+        self.save_data_to_file()
         self.refresh_calculations()
         self.update_monitoring()
 
+        # очистка
         self.input_plate.clear()
         self.input_brand.clear()
         self.input_owner.clear()
         self.input_phone.clear()
+        # перевести combo на следующее свободное
         self._select_next_free_place()
 
         self.statusbar.showMessage(f"Автомобиль {plate} зарегистрирован на место №{place}", 4000)
-
-    def _save_car_to_db(self, plate, brand, owner, phone, place, time_str, discount):
-        """Сохраняет автомобиль и сессию в PostgreSQL"""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            # 1. Владелец
-            cur.execute(
-                "INSERT INTO owners (full_name, phone) VALUES (%s, %s) RETURNING id",
-                (owner, phone)
-            )
-            owner_id = cur.fetchone()[0]
-
-            # 2. Автомобиль
-            cur.execute(
-                "INSERT INTO vehicles (plate_number, make_model, owner_id) VALUES (%s, %s, %s) RETURNING id",
-                (plate, brand, owner_id)
-            )
-            vehicle_id = cur.fetchone()[0]
-
-            # 3. Находим tariff_id и discount_id
-            cur.execute("SELECT id FROM tariffs WHERE is_active = TRUE LIMIT 1")
-            tariff_id = cur.fetchone()[0]
-
-            cur.execute("SELECT id FROM discounts WHERE percent = %s LIMIT 1", (discount,))
-            row = cur.fetchone()
-            discount_id = row[0] if row else None
-
-            # 4. Находим parking_spot_id
-            cur.execute("SELECT id FROM parking_spots WHERE number = %s", (place,))
-            spot_id = cur.fetchone()[0]
-
-            # 5. Создаём сессию
-            cur.execute(
-                """INSERT INTO parking_sessions
-                   (vehicle_id, parking_spot_id, tariff_id, discount_id, arrival_time)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (vehicle_id, spot_id, tariff_id, discount_id, time_str)
-            )
-        finally:
-            cur.close()
-            conn.close()
 
     def _select_next_free_place(self):
         occ = self._occupied_places()
@@ -415,6 +382,7 @@ class ParkingApp(QMainWindow):
         row = self.tableCars.rowCount()
         self.tableCars.insertRow(row)
         dark = QColor("#1a2b4c")
+        # 0 plate,1 brand,2 owner,3 phone,4 place,5 time,6 duration,7 cost,8 discount,9 status
         def _it(text):
             it = QTableWidgetItem(text)
             it.setForeground(dark)
@@ -426,6 +394,7 @@ class ParkingApp(QMainWindow):
         self.tableCars.setItem(row, 4, _it(str(place)))
         self.tableCars.setItem(row, 5, _it(time_str))
 
+        # длительность/стоимость — заполнит refresh
         self.tableCars.setItem(row, 6, _it("—"))
         self.tableCars.setItem(row, 7, _it("—"))
         self.tableCars.setItem(row, 8, _it(f"{discount}%"))
@@ -434,10 +403,12 @@ class ParkingApp(QMainWindow):
         status_item.setForeground(QColor("#1d4ed8"))
         self.tableCars.setItem(row, 9, status_item)
 
+        # выравнивание по центру + цвет
         for col in (4,6,7,8,9):
             it = self.tableCars.item(row, col)
             if it:
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        # левые колонки тоже явно темные
         for col in (0,1,2,3,5):
             it = self.tableCars.item(row, col)
             if it:
@@ -453,13 +424,16 @@ class ParkingApp(QMainWindow):
             except:
                 disc = 0
             _, cost, dur = self._calc_duration_cost(time_str, disc)
+            # длительность
             dur_item = self.tableCars.item(row, 6)
             if dur_item:
                 dur_item.setText(dur)
                 dur_item.setForeground(QColor("#1a2b4c"))
+            # стоимость
             cost_item = self.tableCars.item(row, 7)
             if cost_item:
                 cost_item.setText(f"{cost} ₽")
+                # подсветка если долго стоит (>24ч)
                 if "д" in dur:
                     cost_item.setForeground(QColor("#7c3aed"))
                 else:
@@ -470,6 +444,7 @@ class ParkingApp(QMainWindow):
         free = TOTAL_PLACES - occupied
         self.label_occupancy.setText(f"Занято: {occupied} / {TOTAL_PLACES}  •  Свободно: {free}")
         self.progressOccupancy.setValue(occupied)
+        # цвет прогресса
         if occupied >= 90:
             self.progressOccupancy.setStyleSheet("QProgressBar{border:1px solid #d0d7e3; border-radius:5px; background:#eef2f7} QProgressBar::chunk{background:#e74c3c}")
         elif occupied >= 70:
@@ -488,18 +463,26 @@ class ParkingApp(QMainWindow):
             btn.setStyleSheet(self._style_for_place(p, occupied=occ, selected=is_sel))
             btn.setToolTip(f"Место №{p} — {'занято' if occ else 'свободно'}")
 
+        # обновить доступность combo — задизейблить занятые (визуально через стиль, но QComboBox не поддерживает disable отдельных items просто)
+        # поэтому оставим все, но при выборе занятого покажем предупреждение (уже в add_car)
+
     def _on_table_select(self):
+        # при выборе строки — подсветить место на сетке и в combo
         row = self.tableCars.currentRow()
         if row < 0:
             return
         try:
             place = self.tableCars.item(row, 4).text()
+            # временно отключить сигнал чтобы не мигать
             self.combo_place.blockSignals(True)
             idx = self.combo_place.findText(place)
+            # не меняем combo если место занято выбранным авто — просто подсветим
+            # но для наглядности подсветим grid
             occ = self._occupied_places()
             sel = int(place) if place.isdigit() else -1
             for p, btn in self.place_buttons.items():
                 occ_p = p in occ
+                # выделить выбранное место авто рамкой
                 if p == sel:
                     btn.setStyleSheet("QPushButton{background:#8e44ad; color:white; border-radius:6px; font-weight:bold; border:2px solid #6c3483}")
                 else:
@@ -533,13 +516,9 @@ class ParkingApp(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        try:
-            self._checkout_car_from_db(plate, dlg.additional_payment, dlg.cost)
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка БД", f"Не удалось оформить выезд:\n{e}")
-            return
-
+        # подтверждение — удаляем
         self.tableCars.removeRow(row)
+        self.save_data_to_file()
         self.update_monitoring()
         self.refresh_calculations()
 
@@ -550,82 +529,82 @@ class ParkingApp(QMainWindow):
             QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nВнесено: {dlg.additional_payment} ₽\nЗадолженность: {remaining} ₽\nМесто №{place} освобождено.")
         self.statusbar.showMessage(f"Место №{place} свободно", 4000)
 
-    def _checkout_car_from_db(self, plate, payment_amount, total_cost):
-        """Завершает сессию и записывает платёж в PostgreSQL"""
-        conn = get_connection()
-        cur = conn.cursor()
+    # ---------- Save / Load ----------
+    def save_data_to_file(self):
+        data = []
+        for row in range(self.tableCars.rowCount()):
+            data.append({
+                "plate": self.tableCars.item(row, 0).text(),
+                "brand": self.tableCars.item(row, 1).text(),
+                "owner": self.tableCars.item(row, 2).text(),
+                "phone": self.tableCars.item(row, 3).text(),
+                "place": self.tableCars.item(row, 4).text(),
+                "time": self.tableCars.item(row, 5).text(),
+                "discount": self.tableCars.item(row, 8).text(),
+                "status": self.tableCars.item(row, 9).text(),
+            })
+        with open(self.DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+
+    def load_data_from_file(self):
+        # пробуем v2, если нет — мигрируем из старого parking_base.json
+        path = self.DATA_FILE
+        if not os.path.exists(path) and os.path.exists("parking_base.json"):
+            # миграция старого формата
+            try:
+                with open("parking_base.json", "r", encoding="utf-8") as f:
+                    old = json.load(f)
+                migrated = []
+                used_places = set()
+                for i, car in enumerate(old):
+                    # подобрать свободное место
+                    place = i+1
+                    while place in used_places and place <= TOTAL_PLACES:
+                        place += 1
+                    used_places.add(place)
+                    migrated.append({
+                        "plate": f"А{100+place:03d}ВС 799",
+                        "brand": car.get("brand","—"),
+                        "owner": car.get("owner","—"),
+                        "phone": "",
+                        "place": str(place),
+                        "time": car.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                        "discount": car.get("discount","0%"),
+                        "status": "На стоянке"
+                    })
+                with open(path, "w", encoding="utf-8") as out:
+                    json.dump(migrated, out, ensure_ascii=False, indent=4)
+            except Exception as e:
+                print(f"Миграция не удалась: {e}")
+                return
+
+        if not os.path.exists(path):
+            return
         try:
-            # Находим активную сессию для этого авто
-            cur.execute(
-                """SELECT ps.id FROM parking_sessions ps
-                   JOIN vehicles v ON v.id = ps.vehicle_id
-                   WHERE v.plate_number = %s AND ps.departure_time IS NULL
-                   LIMIT 1""",
-                (plate,)
-            )
-            row = cur.fetchone()
-            if not row:
-                raise Exception(f"Активная сессия для {plate} не найдена")
-
-            session_id = row[0]
-
-            # Завершаем сессию
-            cur.execute(
-                "UPDATE parking_sessions SET departure_time = %s WHERE id = %s",
-                (datetime.now().strftime("%Y-%m-%d %H:%M"), session_id)
-            )
-
-            # Записываем платёж
-            cur.execute(
-                "INSERT INTO payments (session_id, amount) VALUES (%s, %s)",
-                (session_id, payment_amount)
-            )
-        finally:
-            cur.close()
-            conn.close()
-
-    # ---------- Load from DB ----------
-    def load_data_from_db(self):
-        """Загружает активные сессии из PostgreSQL"""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                """SELECT v.plate_number, v.make_model, o.full_name, o.phone,
-                          sess.parking_spot_id, sess.arrival_time, d.percent
-                   FROM parking_sessions sess
-                   JOIN vehicles v ON v.id = sess.vehicle_id
-                   JOIN owners o ON o.id = v.owner_id
-                   JOIN parking_spots spot ON spot.id = sess.parking_spot_id
-                   LEFT JOIN discounts d ON d.id = sess.discount_id
-                   WHERE sess.departure_time IS NULL
-                   ORDER BY sess.arrival_time"""
-            )
-            rows = cur.fetchall()
-            for row in rows:
-                plate, brand, owner, phone, spot_id, arrival, discount = row
-                # Находим номер места по spot_id
-                cur2 = conn.cursor()
-                cur2.execute("SELECT number FROM parking_spots WHERE id = %s", (spot_id,))
-                place_row = cur2.fetchone()
-                cur2.close()
-                place = place_row[0] if place_row else 1
-
-                disc_int = int(discount) if discount else 0
-                self.insert_row_to_table(plate, brand, owner, phone, place, arrival, disc_int)
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for car in data:
+                disc = car.get("discount","0%").replace("%","")
+                try:
+                    disc_int = int(disc)
+                except:
+                    disc_int = 0
+                self.insert_row_to_table(
+                    car.get("plate",""),
+                    car.get("brand",""),
+                    car.get("owner",""),
+                    car.get("phone",""),
+                    int(car.get("place",1)) if str(car.get("place","1")).isdigit() else 1,
+                    car.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                    disc_int
+                )
         except Exception as e:
-            print(f"Ошибка загрузки из БД: {e}")
-        finally:
-            cur.close()
-            conn.close()
+            print(f"Ошибка чтения {path}: {e}")
 
 
-ParkingAppV2 = ParkingApp
+ParkingAppV2 = ParkingApp  # alias для совместимости с main_v2
 
 if __name__ == "__main__":
-    # Автоматическая инициализация БД при первом запуске
-    init_database()
-
     app = QApplication(sys.argv)
     apply_light_palette(app)
     w = ParkingApp()
