@@ -226,3 +226,31 @@ def get_payments_total(session_id):
     rows = _fetch_all("SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE session_id = %s",
                       (session_id,))
     return int(rows[0]["total"]) if rows else 0
+
+
+# ---------- п.7: выезд без удаления ----------
+
+def close_session(session_id, departure_time=None):
+    """Проставляет departure_time (автоматически now()), запись остается для истории.
+    Возвращает (departure_time, total_cost) после закрытия."""
+    from datetime import datetime
+    departure_time = departure_time or datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            UPDATE parking_sessions
+            SET departure_time = %s
+            WHERE id = %s AND departure_time IS NULL
+            RETURNING departure_time, total_cost
+        """, (departure_time, session_id))
+        row = cur.fetchone()
+        conn.commit()
+        if not row:
+            raise ValueError(f"Сессия {session_id} уже закрыта или не существует")
+        return dict(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

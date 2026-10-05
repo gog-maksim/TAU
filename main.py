@@ -703,17 +703,34 @@ class ParkingApp(QMainWindow):
         elif db_session_id is None and self.db_ok:
             print(f"[DB-pay] {plate}: сессии в БД нет (старая JSON-запись), платеж только на экране")
 
-        # подтверждение — удаляем
+        # --- п.7: закрываем сессию в БД (departure_time автоматом, запись остается для истории) ---
+        db_departure = None
+        if db_session_id is not None:
+            try:
+                from db_repo import close_session, get_snapshot
+                db_departure = datetime.now().strftime("%Y-%m-%d %H:%M")
+                closed = close_session(db_session_id, db_departure)
+                db_departure = closed["departure_time"]
+                print(f"[DB-exit] session={db_session_id} departure={db_departure} total={closed['total_cost']}")
+                try:
+                    self.db_snapshot = get_snapshot()
+                except Exception:
+                    pass
+            except Exception as e:
+                QMessageBox.warning(self, "БД: выезд не закрыт", f"{e}\nСтрока из таблицы/файла будет удалена, но сессия в БД осталась открытой.")
+                db_departure = None
+
+        # подтверждение — удаляем строку из таблицы/файла (в БД история сохраняется)
         self.tableCars.removeRow(row)
         self.save_data_to_file()
         self.update_monitoring()
         self.refresh_calculations()
 
         if dlg.result_action == "paid":
-            QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nОплачено: {dlg.cost} ₽ (внесено {dlg.additional_payment} ₽).\nМесто №{place} освобождено.")
+            QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nОплачено: {dlg.cost} ₽ (внесено {dlg.additional_payment} ₽).\nВремя выезда: {db_departure or '—'}.\nМесто №{place} освобождено.")
         else:
             remaining = dlg.cost - dlg.additional_payment
-            QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nВнесено: {dlg.additional_payment} ₽\nЗадолженность: {remaining} ₽\nМесто №{place} освобождено.")
+            QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nВнесено: {dlg.additional_payment} ₽\nЗадолженность: {remaining} ₽\nВремя выезда: {db_departure or '—'}.\nМесто №{place} освобождено.")
         self.statusbar.showMessage(f"Место №{place} свободно", 4000)
 
     # ---------- Save / Load ----------
