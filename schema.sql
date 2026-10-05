@@ -73,11 +73,12 @@ CREATE TABLE IF NOT EXISTS blacklist (
 -- Заполняем справочники по умолчанию
 -- ============================================
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name ON tariffs(name);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name ON discounts(name);
+-- тарифы версионируются: уникальность имени только среди активных
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name_active ON tariffs(name) WHERE is_active = TRUE;
 
 INSERT INTO tariffs (name, hourly_rate) VALUES ('Стандартный', 100)
-ON CONFLICT (name) DO NOTHING;
+ON CONFLICT (name) WHERE is_active DO NOTHING;
 
 INSERT INTO discounts (name, percent) VALUES
     ('Нет', 0),

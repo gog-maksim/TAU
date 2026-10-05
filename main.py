@@ -1,6 +1,4 @@
 import sys
-import json
-import os
 import math
 import re
 from datetime import datetime
@@ -8,7 +6,8 @@ from PyQt6 import uic
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidgetItem, QMessageBox,
     QHeaderView, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSpinBox, QDialogButtonBox, QFrame, QGridLayout
+    QPushButton, QSpinBox, QDialogButtonBox, QFrame, QGridLayout,
+    QToolBar, QLineEdit, QTableWidget
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPalette, QColor
@@ -176,6 +175,315 @@ class CheckoutDialog(QDialog):
         self.accept()
 
 
+def _make_table(cols):
+    t = QTableWidget()
+    t.setColumnCount(len(cols))
+    t.setHorizontalHeaderLabels(cols)
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+    t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    t.verticalHeader().setVisible(False)
+    t.setAlternatingRowColors(True)
+    return t
+
+
+class BlacklistDialog(QDialog):
+    """п.8: чёрный список. Удаления нет — только флаг is_active."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Чёрный список")
+        self.setMinimumSize(620, 420)
+        self.setStyleSheet(LIGHT_QSS)
+        lay = QVBoxLayout(self)
+
+        form = QHBoxLayout()
+        self.input_plate = QLineEdit()
+        self.input_plate.setPlaceholderText("Гос.номер")
+        self.input_reason = QLineEdit()
+        self.input_reason.setPlaceholderText("Причина")
+        btn_add = QPushButton("Добавить")
+        btn_add.setStyleSheet("background:#c0392b; color:white; font-weight:bold; padding:8px; border-radius:6px;")
+        btn_add.clicked.connect(self.add_entry)
+        form.addWidget(self.input_plate)
+        form.addWidget(self.input_reason)
+        form.addWidget(btn_add)
+        lay.addLayout(form)
+
+        self.table = _make_table(["ID", "Номер", "Марка", "Причина", "Дата", "Активна"])
+        lay.addWidget(self.table)
+
+        row = QHBoxLayout()
+        self.btn_toggle = QPushButton("Деактивировать / восстановить")
+        self.btn_toggle.clicked.connect(self.toggle_entry)
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(self.btn_toggle)
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+        self.reload()
+
+    def reload(self):
+        from db_repo import get_blacklist
+        try:
+            rows = get_blacklist(active_only=False)
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        self.table.setRowCount(0)
+        for r in rows:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(str(r["id"])))
+            self.table.setItem(i, 1, QTableWidgetItem(r["plate"] or ""))
+            self.table.setItem(i, 2, QTableWidgetItem(r["brand"] or ""))
+            self.table.setItem(i, 3, QTableWidgetItem(r["reason"] or ""))
+            self.table.setItem(i, 4, QTableWidgetItem(r["date_added"] or ""))
+            self.table.setItem(i, 5, QTableWidgetItem("Да" if r["is_active"] else "Нет"))
+
+    def add_entry(self):
+        from db_repo import add_blacklist_entry
+        plate = self.input_plate.text().strip().upper()
+        if len(plate) < 5:
+            QMessageBox.warning(self, "Ошибка", "Укажите гос.номер.")
+            return
+        try:
+            bid = add_blacklist_entry(plate, self.input_reason.text().strip())
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        print(f"[DB-bl] добавлен {plate} id={bid}")
+        self.input_plate.clear()
+        self.input_reason.clear()
+        self.reload()
+
+    def toggle_entry(self):
+        from db_repo import set_blacklist_active
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "ЧС", "Выберите запись.")
+            return
+        bid = int(self.table.item(row, 0).text())
+        active = self.table.item(row, 5).text() == "Да"
+        try:
+            set_blacklist_active(bid, not active)
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        print(f"[DB-bl] id={bid} active={not active}")
+        self.reload()
+
+
+class DiscountsDialog(QDialog):
+    """п.8: скидки. Отключение — флаг is_active, записи храним."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.setWindowTitle("Скидки")
+        self.setMinimumSize(520, 420)
+        self.setStyleSheet(LIGHT_QSS)
+        lay = QVBoxLayout(self)
+
+        form = QHBoxLayout()
+        self.input_name = QLineEdit()
+        self.input_name.setPlaceholderText("Название")
+        self.spin_percent = QSpinBox()
+        self.spin_percent.setRange(0, 100)
+        self.spin_percent.setSuffix(" %")
+        btn_add = QPushButton("Добавить")
+        btn_add.setStyleSheet("background:#27ae60; color:white; font-weight:bold; padding:8px; border-radius:6px;")
+        btn_add.clicked.connect(self.add_discount)
+        form.addWidget(self.input_name)
+        form.addWidget(self.spin_percent)
+        form.addWidget(btn_add)
+        lay.addLayout(form)
+
+        self.table = _make_table(["ID", "Название", "%", "Активна"])
+        self.table.itemSelectionChanged.connect(self._on_select)
+        lay.addWidget(self.table)
+
+        row = QHBoxLayout()
+        self.btn_save = QPushButton("Сохранить изменения")
+        self.btn_save.clicked.connect(self.save_selected)
+        self.btn_toggle = QPushButton("Отключить / включить")
+        self.btn_toggle.clicked.connect(self.toggle_selected)
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(self.btn_save)
+        row.addWidget(self.btn_toggle)
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+        self.reload()
+
+    def reload(self):
+        from db_repo import get_discounts
+        try:
+            rows = get_discounts(active_only=False)
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        # подтягиваем полное состояние (is_active) прямым запросом
+        from db_repo import _fetch_all
+        try:
+            full = {r["id"]: r for r in _fetch_all("SELECT id, is_active FROM discounts ORDER BY id")}
+        except Exception:
+            full = {}
+        self.table.setRowCount(0)
+        for r in rows:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(str(r["id"])))
+            self.table.setItem(i, 1, QTableWidgetItem(r["name"]))
+            self.table.setItem(i, 2, QTableWidgetItem(str(r["percent"])))
+            act = full.get(r["id"], {}).get("is_active", True)
+            self.table.setItem(i, 3, QTableWidgetItem("Да" if act else "Нет"))
+
+    def _on_select(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        self.input_name.setText(self.table.item(row, 1).text())
+        try:
+            self.spin_percent.setValue(int(self.table.item(row, 2).text()))
+        except Exception:
+            pass
+
+    def add_discount(self):
+        from db_repo import add_discount
+        try:
+            did = add_discount(self.input_name.text(), self.spin_percent.value())
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        print(f"[DB-disc] добавлена id={did}")
+        self.input_name.clear()
+        self.reload()
+        self.parent_app.refresh_reference_data()
+
+    def save_selected(self):
+        from db_repo import update_discount
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Скидки", "Выберите запись.")
+            return
+        try:
+            update_discount(int(self.table.item(row, 0).text()), self.input_name.text(), self.spin_percent.value())
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        self.reload()
+        self.parent_app.refresh_reference_data()
+
+    def toggle_selected(self):
+        from db_repo import set_discount_active
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Скидки", "Выберите запись.")
+            return
+        active = self.table.item(row, 3).text() == "Да"
+        try:
+            set_discount_active(int(self.table.item(row, 0).text()), not active)
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        self.reload()
+        self.parent_app.refresh_reference_data()
+
+
+class TariffDialog(QDialog):
+    """п.8: тариф. Изменение = новая версия, старые не трогаем."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.setWindowTitle("Тариф")
+        self.setMinimumWidth(380)
+        self.setStyleSheet(LIGHT_QSS)
+        lay = QVBoxLayout(self)
+        self.label_cur = QLabel()
+        lay.addWidget(self.label_cur)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Новый тариф (₽/час):"))
+        self.spin_rate = QSpinBox()
+        self.spin_rate.setRange(1, 10000)
+        self.spin_rate.setSingleStep(10)
+        row.addWidget(self.spin_rate)
+        lay.addLayout(row)
+        hint = QLabel("Старый тариф деактивируется, но остаётся в БД — история не меняется.")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        btns = QHBoxLayout()
+        btn_save = QPushButton("Сохранить")
+        btn_save.setStyleSheet("background:#27ae60; color:white; font-weight:bold; padding:8px; border-radius:6px;")
+        btn_save.clicked.connect(self.save)
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(self.accept)
+        btns.addWidget(btn_save)
+        btns.addWidget(btn_close)
+        lay.addLayout(btns)
+        self.reload()
+
+    def reload(self):
+        from db_repo import get_tariffs
+        try:
+            t = get_tariffs()[0]
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        self.label_cur.setText(f"Текущий: <b>{t['name']} — {t['hourly_rate']} ₽/час</b> (id={t['id']})")
+        self.label_cur.setTextFormat(Qt.TextFormat.RichText)
+        self.spin_rate.setValue(int(t["hourly_rate"]))
+
+    def save(self):
+        from db_repo import replace_active_tariff
+        try:
+            nid = replace_active_tariff(self.spin_rate.value())
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        print(f"[DB-tariff] новый id={nid} rate={self.spin_rate.value()}")
+        self.parent_app.refresh_reference_data()
+        self.reload()
+
+
+class HistoryDialog(QDialog):
+    """п.9: завершённые стоянки. Только чтение, ничего не удаляем."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("История стоянок")
+        self.setMinimumSize(900, 480)
+        self.setStyleSheet(LIGHT_QSS)
+        lay = QVBoxLayout(self)
+        self.table = _make_table(["Сессия", "Номер", "Марка", "Владелец", "Место",
+                                  "Въезд", "Выезд", "Тариф", "Скидка", "Итого", "Оплачено", "Долг"])
+        lay.addWidget(self.table)
+        row = QHBoxLayout()
+        btn_refresh = QPushButton("Обновить")
+        btn_refresh.clicked.connect(self.reload)
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(btn_refresh)
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+        self.reload()
+
+    def reload(self):
+        from db_repo import get_full_history
+        try:
+            rows = get_full_history()
+        except Exception as e:
+            QMessageBox.warning(self, "БД", str(e))
+            return
+        self.table.setRowCount(0)
+        for r in rows:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            vals = [r["session_id"], r["plate"], r["brand"], r["owner"], r["place"],
+                    r["arrival"], r["departure"], f'{r["rate"]} ₽/ч', f'{r["discount"]}%',
+                    f'{r["total"]} ₽', f'{r["paid"]} ₽', f'{r["debt"]} ₽']
+            for c, v in enumerate(vals):
+                self.table.setItem(i, c, QTableWidgetItem(str(v)))
+        print(f"[DB-history] показано {len(rows)} завершённых стоянок")
+
+
 def apply_light_palette(app: QApplication):
     """Принудительно светлая палитра — перебивает системную темную тему"""
     app.setStyle("Fusion")
@@ -195,13 +503,21 @@ def apply_light_palette(app: QApplication):
 
 
 class ParkingApp(QMainWindow):
-    """Основной класс — перенесен из v2 по ТЗ п.7"""
+    """Главное окно: въезд/выезд/мониторинг/схема. Источник данных — PostgreSQL."""
     def __init__(self):
         super().__init__()
         uic.loadUi("parking.ui", self)
 
-        self.DATA_FILE = "parking_base_v2.json"
         self.HOURLY_RATE = HOURLY_RATE
+
+        # --- верхняя панель: разделы ---
+        toolbar = QToolBar("Разделы", self)
+        toolbar.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
+        toolbar.addAction("Чёрный список").triggered.connect(self.open_blacklist)
+        toolbar.addAction("Скидки").triggered.connect(self.open_discounts)
+        toolbar.addAction("Тариф").triggered.connect(self.open_tariff)
+        toolbar.addAction("История").triggered.connect(self.open_history)
 
         # Настройка таблицы
         self.tableCars.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -230,7 +546,7 @@ class ParkingApp(QMainWindow):
         self.timer.timeout.connect(self.refresh_calculations)
         self.timer.start(60_000)
 
-        # --- п.1: подключение к PostgreSQL (JSON пока остается источником) ---
+        # --- подключение к PostgreSQL ---
         self.db_ok = False
         self.db_message = "модуль БД недоступен"
         self.db_snapshot = None
@@ -244,55 +560,53 @@ class ParkingApp(QMainWindow):
                 self.db_ok = False
                 self.db_message = str(e)
 
-        # --- п.2: read-only проверка чтения из БД (на запись не влияем) ---
-        if self.db_ok:
-            try:
-                from db_repo import get_snapshot
-                self.db_snapshot = get_snapshot()
-                print(f"[DB-read] tariffs={len(self.db_snapshot['tariffs'])} "
-                      f"discounts={len(self.db_snapshot['discounts'])} "
-                      f"occupied={self.db_snapshot['occupied']} "
-                      f"active={self.db_snapshot['active_count']}")
-            except Exception as e:
-                print(f"[DB-read] ошибка чтения: {e}")
-                self.db_snapshot = None
+        if not self.db_ok:
+            QMessageBox.critical(self, "Нет связи с БД",
+                                 f"Не удалось подключиться к PostgreSQL:\n{self.db_message}")
+            self.tariff_id = None
+            self.tariff_name = "Стандартный"
+            self.statusbar.showMessage("БД: нет связи", 6000)
+            return
 
-        self.load_data_from_file()
+        self.refresh_reference_data()
+        if getattr(self, "tariff_id", None) is None:
+            self.tariff_id = None
+            self.tariff_name = "Стандартный"
+        self.load_table_from_db()
         self.refresh_calculations()
         self.update_monitoring()
-        # --- п.3: тариф и скидки из БД в интерфейс ---
-        self.tariff_id = None
-        self.tariff_name = "Стандартный"
-        self.reload_pricing_from_db()
-        # --- п.4: сверка занятых мест JSON vs БД (таблица пока из JSON) ---
-        self.refresh_db_comparison()
-        if self.db_ok and self.db_snapshot is not None:
-            db_info = (f"БД: подключено (тариф:{self.tariff_name} {self.HOURLY_RATE} ₽/ч, "
-                       f"скидок:{self.combo_discount.count()} "
-                       f"занято в БД:{len(self.db_snapshot['occupied'])}) • JSON: {self.tableCars.rowCount()} авто")
-        else:
-            db_info = f"БД: нет связи ({str(self.db_message)[:80]}), работа в JSON"
-        # режим просмотра БД: USE_DB_TABLE=1 — таблица строится из БД, JSON не трогаем
-        if os.getenv("USE_DB_TABLE") == "1" and self.db_ok:
-            self.load_table_from_db()
-            db_info += " • РЕЖИМ БД"
-        self.statusbar.showMessage(db_info, 6000)
+        self.statusbar.showMessage(
+            f"БД: подключено (тариф:{self.tariff_name} {self.HOURLY_RATE} ₽/ч, "
+            f"скидок:{self.combo_discount.count()}, на стоянке:{self.tableCars.rowCount()})",
+            6000
+        )
 
-    def refresh_db_comparison(self):
-        """п.4: сравнить занятые места в таблице (JSON) и в БД. Только лог, без перезаписи."""
-        if not self.db_ok or not self.db_snapshot:
-            return None
-        json_places = self._occupied_places()
-        db_places = set(self.db_snapshot.get("occupied", []))
-        only_json = sorted(json_places - db_places)
-        only_db = sorted(db_places - json_places)
-        print(f"[DB-compare] JSON занято={sorted(json_places)} БД занято={sorted(db_places)} "
-              f"только JSON={only_json} только БД={only_db}")
-        return {"json": json_places, "db": db_places,
-                "only_json": only_json, "only_db": only_db}
+    def refresh_reference_data(self):
+        """Перечитать справочники из БД (тарифы/скидки/занятость) и обновить виджеты."""
+        if not self.db_ok:
+            return
+        try:
+            from db_repo import get_snapshot
+            self.db_snapshot = get_snapshot()
+        except Exception as e:
+            print(f"[DB-read] ошибка чтения: {e}")
+            return
+        self.reload_pricing_from_db()
+
+    def open_blacklist(self):
+        BlacklistDialog(self).exec()
+
+    def open_discounts(self):
+        DiscountsDialog(self).exec()
+
+    def open_tariff(self):
+        TariffDialog(self).exec()
+
+    def open_history(self):
+        HistoryDialog(self).exec()
 
     def load_table_from_db(self):
-        """п.4: перестроить таблицу и сетку из активных сессий БД. JSON-файл не меняется."""
+        """Перестроить таблицу и сетку из активных сессий БД."""
         from db_repo import get_active_sessions
         active = get_active_sessions()
         self.tableCars.setRowCount(0)
@@ -482,38 +796,51 @@ class ParkingApp(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Номер телефона указан некорректно.")
             return
 
+        if not self.db_ok:
+            QMessageBox.warning(self, "БД", "Нет связи с базой данных.")
+            return
+
+        # чёрный список
+        try:
+            from db_repo import is_blacklisted
+            bl = is_blacklisted(plate)
+        except Exception:
+            bl = None
+        if bl:
+            QMessageBox.warning(self, "Чёрный список",
+                                f"Автомобиль {plate} в чёрном списке.\nПричина: {bl.get('reason') or '—'}")
+            return
+
         # скидка
         m = re.search(r"(\d+)%", discount_text)
         discount = int(m.group(1)) if m else 0
 
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # --- п.5: сначала пишем в БД (если подключена), потом в файл ---
+        # --- въезд: пишем в БД ---
         db_session_id = None
-        if self.db_ok:
+        try:
+            from db_repo import create_parking_entry, get_snapshot
+            if not self.tariff_id:
+                raise ValueError("Тариф не загружен из БД")
+            db_session_id = create_parking_entry(
+                plate, brand, owner, phone, place,
+                tariff_id=self.tariff_id,
+                discount_id=self.current_discount_id(),
+                arrival_time=time_str,
+            )
+            print(f"[DB-write] въезд: {plate} место {place} session={db_session_id}")
             try:
-                from db_repo import create_parking_entry, get_snapshot
-                if not self.tariff_id:
-                    raise ValueError("Тариф не загружен из БД")
-                db_session_id = create_parking_entry(
-                    plate, brand, owner, phone, place,
-                    tariff_id=self.tariff_id,
-                    discount_id=self.current_discount_id(),
-                    arrival_time=time_str,
-                )
-                print(f"[DB-write] въезд: {plate} место {place} session={db_session_id}")
-                try:
-                    self.db_snapshot = get_snapshot()
-                except Exception:
-                    pass
-            except Exception as e:
-                QMessageBox.warning(self, "БД: въезд отклонен", f"{e}\nЗапись в файл не выполнена (чтобы не расходиться с БД).")
-                return
+                self.db_snapshot = get_snapshot()
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "БД: въезд отклонен", str(e))
+            return
 
         # вставляем — длительность/стоимость посчитаются в refresh
         self.insert_row_to_table(plate, brand, owner, phone, place, time_str, discount)
 
-        self.save_data_to_file()
         self.refresh_calculations()
         self.update_monitoring()
 
@@ -699,7 +1026,7 @@ class ParkingApp(QMainWindow):
                 pid = add_payment(db_session_id, dlg.additional_payment)
                 print(f"[DB-pay] session={db_session_id} payment={dlg.additional_payment} pid={pid}")
             except Exception as e:
-                QMessageBox.warning(self, "БД: платеж не записан", f"{e}\nВыезд из таблицы/файла все равно будет оформлен.")
+                QMessageBox.warning(self, "БД: платеж не записан", f"{e}\nВыезд все равно будет оформлен.")
         elif db_session_id is None and self.db_ok:
             print(f"[DB-pay] {plate}: сессии в БД нет (старая JSON-запись), платеж только на экране")
 
@@ -717,12 +1044,11 @@ class ParkingApp(QMainWindow):
                 except Exception:
                     pass
             except Exception as e:
-                QMessageBox.warning(self, "БД: выезд не закрыт", f"{e}\nСтрока из таблицы/файла будет удалена, но сессия в БД осталась открытой.")
+                QMessageBox.warning(self, "БД: выезд не закрыт", f"{e}\nСтрока из таблицы будет удалена, но сессия в БД осталась открытой.")
                 db_departure = None
 
-        # подтверждение — удаляем строку из таблицы/файла (в БД история сохраняется)
+        # подтверждение — убираем строку из таблицы (в БД история сохраняется)
         self.tableCars.removeRow(row)
-        self.save_data_to_file()
         self.update_monitoring()
         self.refresh_calculations()
 
@@ -732,79 +1058,6 @@ class ParkingApp(QMainWindow):
             remaining = dlg.cost - dlg.additional_payment
             QMessageBox.information(self, "Выезд оформлен", f"Автомобиль {plate} выехал.\nВнесено: {dlg.additional_payment} ₽\nЗадолженность: {remaining} ₽\nВремя выезда: {db_departure or '—'}.\nМесто №{place} освобождено.")
         self.statusbar.showMessage(f"Место №{place} свободно", 4000)
-
-    # ---------- Save / Load ----------
-    def save_data_to_file(self):
-        data = []
-        for row in range(self.tableCars.rowCount()):
-            data.append({
-                "plate": self.tableCars.item(row, 0).text(),
-                "brand": self.tableCars.item(row, 1).text(),
-                "owner": self.tableCars.item(row, 2).text(),
-                "phone": self.tableCars.item(row, 3).text(),
-                "place": self.tableCars.item(row, 4).text(),
-                "time": self.tableCars.item(row, 5).text(),
-                "discount": self.tableCars.item(row, 8).text(),
-                "status": self.tableCars.item(row, 9).text(),
-            })
-        with open(self.DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-
-    def load_data_from_file(self):
-        # пробуем v2, если нет — мигрируем из старого parking_base.json
-        path = self.DATA_FILE
-        if not os.path.exists(path) and os.path.exists("parking_base.json"):
-            # миграция старого формата
-            try:
-                with open("parking_base.json", "r", encoding="utf-8") as f:
-                    old = json.load(f)
-                migrated = []
-                used_places = set()
-                for i, car in enumerate(old):
-                    # подобрать свободное место
-                    place = i+1
-                    while place in used_places and place <= TOTAL_PLACES:
-                        place += 1
-                    used_places.add(place)
-                    migrated.append({
-                        "plate": f"А{100+place:03d}ВС 799",
-                        "brand": car.get("brand","—"),
-                        "owner": car.get("owner","—"),
-                        "phone": "",
-                        "place": str(place),
-                        "time": car.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
-                        "discount": car.get("discount","0%"),
-                        "status": "На стоянке"
-                    })
-                with open(path, "w", encoding="utf-8") as out:
-                    json.dump(migrated, out, ensure_ascii=False, indent=4)
-            except Exception as e:
-                print(f"Миграция не удалась: {e}")
-                return
-
-        if not os.path.exists(path):
-            return
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for car in data:
-                disc = car.get("discount","0%").replace("%","")
-                try:
-                    disc_int = int(disc)
-                except:
-                    disc_int = 0
-                self.insert_row_to_table(
-                    car.get("plate",""),
-                    car.get("brand",""),
-                    car.get("owner",""),
-                    car.get("phone",""),
-                    int(car.get("place",1)) if str(car.get("place","1")).isdigit() else 1,
-                    car.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
-                    disc_int
-                )
-        except Exception as e:
-            print(f"Ошибка чтения {path}: {e}")
-
 
 ParkingAppV2 = ParkingApp  # alias для совместимости с main_v2
 

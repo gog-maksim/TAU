@@ -254,3 +254,190 @@ def close_session(session_id, departure_time=None):
         raise
     finally:
         conn.close()
+
+
+# ---------- п.8: чёрный список ----------
+
+def get_blacklist(active_only=False):
+    q = """
+        SELECT b.id, v.plate_number AS plate, v.make_model AS brand,
+               b.reason, b.date_added, b.is_active
+        FROM blacklist b
+        JOIN vehicles v ON v.id = b.vehicle_id
+    """
+    if active_only:
+        q += " WHERE b.is_active = TRUE"
+    return _fetch_all(q + " ORDER BY b.id DESC")
+
+
+def is_blacklisted(plate):
+    """Активная запись ЧС по номеру или None."""
+    rows = _fetch_all("""
+        SELECT b.id, b.reason, b.date_added
+        FROM blacklist b
+        JOIN vehicles v ON v.id = b.vehicle_id
+        WHERE upper(v.plate_number) = upper(%s) AND b.is_active = TRUE
+        LIMIT 1
+    """, (plate,))
+    return rows[0] if rows else None
+
+
+def add_blacklist_entry(plate, reason=""):
+    """Добавляет авто в ЧС. Создаёт заглушки owner/vehicle если номера ещё нет в БД."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id FROM vehicles WHERE upper(plate_number) = upper(%s)", (plate,))
+        veh = cur.fetchone()
+        if veh:
+            vehicle_id = veh["id"]
+        else:
+            cur.execute("SELECT id FROM owners WHERE full_name = '(ЧС)' LIMIT 1")
+            stub = cur.fetchone()
+            owner_id = stub["id"] if stub else None
+            if owner_id is None:
+                cur.execute("INSERT INTO owners (full_name, phone) VALUES ('(ЧС)', '') RETURNING id")
+                owner_id = cur.fetchone()["id"]
+            cur.execute("INSERT INTO vehicles (plate_number, make_model, owner_id) VALUES (%s, '(ЧС)', %s) RETURNING id",
+                        (plate, owner_id))
+            vehicle_id = cur.fetchone()["id"]
+        cur.execute("SELECT id FROM blacklist WHERE vehicle_id = %s AND is_active = TRUE", (vehicle_id,))
+        if cur.fetchone():
+            raise ValueError(f"Автомобиль {plate} уже в чёрном списке")
+        cur.execute("INSERT INTO blacklist (vehicle_id, reason) VALUES (%s, %s) RETURNING id",
+                    (vehicle_id, reason or ""))
+        bid = cur.fetchone()["id"]
+        conn.commit()
+        return bid
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def set_blacklist_active(entry_id, active):
+    """Мягкое удаление/восстановление: только флаг is_active, запись сохраняется."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE blacklist SET is_active = %s WHERE id = %s", (bool(active), entry_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------- п.8: скидки ----------
+
+def add_discount(name, percent):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Название скидки пустое")
+    percent = int(percent)
+    if not 0 <= percent <= 100:
+        raise ValueError("Скидка должна быть 0–100%")
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("INSERT INTO discounts (name, percent) VALUES (%s, %s) RETURNING id",
+                    (name, percent))
+        did = cur.fetchone()["id"]
+        conn.commit()
+        return did
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_discount(discount_id, name, percent):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Название скидки пустое")
+    percent = int(percent)
+    if not 0 <= percent <= 100:
+        raise ValueError("Скидка должна быть 0–100%")
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE discounts SET name = %s, percent = %s WHERE id = %s",
+                    (name, percent, discount_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def set_discount_active(discount_id, active):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE discounts SET is_active = %s WHERE id = %s", (bool(active), discount_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------- п.8: тариф (версионирование, старые не трогаем) ----------
+
+def replace_active_tariff(hourly_rate):
+    """Создаёт новый активный тариф, старый деактивирует (история сессий не меняется)."""
+    hourly_rate = int(hourly_rate)
+    if hourly_rate <= 0:
+        raise ValueError("Тариф должен быть > 0")
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, name FROM tariffs WHERE is_active = TRUE ORDER BY id DESC LIMIT 1")
+        cur_t = cur.fetchone()
+        name = cur_t["name"] if cur_t else "Стандартный"
+        cur.execute("UPDATE tariffs SET is_active = FALSE WHERE is_active = TRUE")
+        cur.execute("INSERT INTO tariffs (name, hourly_rate) VALUES (%s, %s) RETURNING id",
+                    (name, hourly_rate))
+        nid = cur.fetchone()["id"]
+        conn.commit()
+        return nid
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------- п.9: история завершённых стоянок ----------
+
+def get_full_history(limit=500):
+    """Завершённые сессии с оплатой: долг = total - sum(payments)."""
+    return _fetch_all("""
+        SELECT
+            ps.id AS session_id,
+            v.plate_number AS plate,
+            v.make_model AS brand,
+            o.full_name AS owner,
+            s.number AS place,
+            ps.arrival_time AS arrival,
+            ps.departure_time AS departure,
+            t.hourly_rate AS rate,
+            COALESCE(d.percent, 0) AS discount,
+            ps.total_cost AS total,
+            COALESCE((SELECT SUM(amount) FROM payments p WHERE p.session_id = ps.id), 0) AS paid,
+            ps.total_cost - COALESCE((SELECT SUM(amount) FROM payments p WHERE p.session_id = ps.id), 0) AS debt
+        FROM parking_sessions ps
+        JOIN vehicles v ON v.id = ps.vehicle_id
+        JOIN owners o ON o.id = v.owner_id
+        JOIN parking_spots s ON s.id = ps.parking_spot_id
+        JOIN tariffs t ON t.id = ps.tariff_id
+        LEFT JOIN discounts d ON d.id = ps.discount_id
+        WHERE ps.departure_time IS NOT NULL
+        ORDER BY ps.id DESC
+        LIMIT %s
+    """, (limit,))

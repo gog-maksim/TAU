@@ -98,20 +98,26 @@ def init_database():
 
         # Заполняем справочники
         # Чистим дубликаты прошлых запусков (баг ON CONFLICT без UNIQUE) — п.1
+        # тарифы версионируются: трогаем только активные дубли, историю не удаляем
         cur.execute("""
-            DELETE FROM tariffs a USING tariffs b
-            WHERE a.id > b.id AND a.name = b.name
+            DELETE FROM tariffs a
+            WHERE a.is_active = TRUE AND EXISTS (
+                SELECT 1 FROM tariffs b
+                WHERE b.name = a.name AND b.is_active = TRUE AND b.id > a.id
+            )
         """)
         cur.execute("""
             DELETE FROM discounts a USING discounts b
             WHERE a.id > b.id AND a.name = b.name
         """)
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name ON tariffs(name)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name ON discounts(name)")
+        # тарифы версионируются (старые inactive остаются): уникальность только среди активных
+        cur.execute("DROP INDEX IF EXISTS uq_tariffs_name")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name_active ON tariffs(name) WHERE is_active = TRUE")
 
         cur.execute("""
             INSERT INTO tariffs (name, hourly_rate) VALUES ('Стандартный', 100)
-            ON CONFLICT (name) DO NOTHING
+            ON CONFLICT (name) WHERE is_active DO NOTHING
         """)
 
         cur.execute("""
