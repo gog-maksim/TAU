@@ -231,6 +231,7 @@ class ParkingApp(QMainWindow):
         # --- п.1: подключение к PostgreSQL (JSON пока остается источником) ---
         self.db_ok = False
         self.db_message = "модуль БД недоступен"
+        self.db_snapshot = None
         if _DB_AVAILABLE:
             try:
                 init_database()
@@ -241,13 +242,29 @@ class ParkingApp(QMainWindow):
                 self.db_ok = False
                 self.db_message = str(e)
 
+        # --- п.2: read-only проверка чтения из БД (на запись не влияем) ---
+        if self.db_ok:
+            try:
+                from db_repo import get_snapshot
+                self.db_snapshot = get_snapshot()
+                print(f"[DB-read] tariffs={len(self.db_snapshot['tariffs'])} "
+                      f"discounts={len(self.db_snapshot['discounts'])} "
+                      f"occupied={self.db_snapshot['occupied']} "
+                      f"active={self.db_snapshot['active_count']}")
+            except Exception as e:
+                print(f"[DB-read] ошибка чтения: {e}")
+                self.db_snapshot = None
+
         self.load_data_from_file()
         self.refresh_calculations()
         self.update_monitoring()
-        self.statusbar.showMessage(
-            f"{'БД: подключено' if self.db_ok else 'БД: нет связи (' + str(self.db_message)[:80] + '), работа в JSON'}",
-            6000
-        )
+        if self.db_ok and self.db_snapshot is not None:
+            db_info = (f"БД: подключено (тарифов:{len(self.db_snapshot['tariffs'])} "
+                       f"скидок:{len(self.db_snapshot['discounts'])} "
+                       f"занято в БД:{len(self.db_snapshot['occupied'])}) • JSON: {self.tableCars.rowCount()} авто")
+        else:
+            db_info = f"БД: нет связи ({str(self.db_message)[:80]}), работа в JSON"
+        self.statusbar.showMessage(db_info, 6000)
 
     # ---------- Grid ----------
     def _build_grid(self):
