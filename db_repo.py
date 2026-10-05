@@ -169,3 +169,60 @@ def create_parking_entry(plate, brand, owner_name, phone, place_number,
         raise
     finally:
         conn.close()
+
+
+# ---------- п.6: оплата и расчёт ----------
+
+def get_active_session_by_plate(plate):
+    """Активная сессия по госномеру. None если авто не в БД (старые JSON-записи)."""
+    rows = _fetch_all("""
+        SELECT
+            ps.id AS session_id,
+            ps.arrival_time,
+            t.hourly_rate,
+            COALESCE(d.percent, 0) AS discount_percent,
+            ps.total_cost AS stored_cost
+        FROM parking_sessions ps
+        JOIN vehicles v ON v.id = ps.vehicle_id
+        JOIN tariffs t ON t.id = ps.tariff_id
+        LEFT JOIN discounts d ON d.id = ps.discount_id
+        WHERE upper(v.plate_number) = upper(%s) AND ps.departure_time IS NULL
+    """, (plate,))
+    return rows[0] if rows else None
+
+
+def calc_current_cost(session_id):
+    """Свежая стоимость через calc_session_cost(arrival, now(), rate, discount)."""
+    rows = _fetch_all("""
+        SELECT calc_session_cost(ps.arrival_time, NULL, t.hourly_rate, COALESCE(d.percent, 0)) AS cost
+        FROM parking_sessions ps
+        JOIN tariffs t ON t.id = ps.tariff_id
+        LEFT JOIN discounts d ON d.id = ps.discount_id
+        WHERE ps.id = %s
+    """, (session_id,))
+    return int(rows[0]["cost"]) if rows else 0
+
+
+def add_payment(session_id, amount):
+    """Записать платеж. amount > 0."""
+    if amount <= 0:
+        return None
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO payments (session_id, amount) VALUES (%s, %s) RETURNING id",
+                    (session_id, int(amount)))
+        pid = cur.fetchone()[0]
+        conn.commit()
+        return pid
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_payments_total(session_id):
+    rows = _fetch_all("SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE session_id = %s",
+                      (session_id,))
+    return int(rows[0]["total"]) if rows else 0

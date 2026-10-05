@@ -37,7 +37,7 @@ QSpinBox::up-button, QSpinBox::down-button { background: #eef2f7; border: 1px so
 
 class CheckoutDialog(QDialog):
     """Диалог оформления выезда по п.7.3 ТЗ"""
-    def __init__(self, parent, car: dict, hourly_rate: int):
+    def __init__(self, parent, car: dict, hourly_rate: int, known_cost=None, cost_source="расчет"):
         super().__init__(parent)
         self.car = car
         self.hourly_rate = hourly_rate
@@ -65,12 +65,14 @@ class CheckoutDialog(QDialog):
         layout.addWidget(info)
 
         # Расчет
-        duration_h, cost = self._calc()
+        duration_h, calc_cost = self._calc()
+        cost = int(known_cost) if known_cost is not None else calc_cost
+        cost_tag = "из БД" if known_cost is not None else cost_source
         self.label_duration = QLabel(f"Текущая длительность: <b>{self._fmt_duration(duration_h)}</b>")
         self.label_duration.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.label_duration)
 
-        self.label_cost = QLabel(f"Расчетная стоимость: <b>{cost} ₽</b>  <span style='color:#6b7a90'>( {duration_h} ч × {hourly_rate} ₽ × скидка )</span>")
+        self.label_cost = QLabel(f"Расчетная стоимость: <b>{cost} ₽</b>  <span style='color:#6b7a90'>( {duration_h} ч × {hourly_rate} ₽ × скидка, {cost_tag} )</span>")
         self.label_cost.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.label_cost)
 
@@ -671,9 +673,35 @@ class ParkingApp(QMainWindow):
 
         car = {"plate": plate, "brand": brand, "owner": owner, "phone": phone, "place": place, "time": time_str, "discount": discount}
 
-        dlg = CheckoutDialog(self, car, self.HOURLY_RATE)
+        # --- п.6: стоимость из БД (свежий calc_session_cost), если сессия есть ---
+        db_session_id = None
+        db_cost = None
+        if self.db_ok:
+            try:
+                from db_repo import get_active_session_by_plate, calc_current_cost
+                sess = get_active_session_by_plate(plate)
+                if sess:
+                    db_session_id = int(sess["session_id"])
+                    db_cost = calc_current_cost(db_session_id)
+                    print(f"[DB-cost] {plate} session={db_session_id} cost={db_cost} (stored={sess.get('stored_cost')})")
+            except Exception as e:
+                print(f"[DB-cost] ошибка: {e}")
+
+        dlg = CheckoutDialog(self, car, self.HOURLY_RATE,
+                             known_cost=db_cost if db_cost is not None else None)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+
+        # --- п.6: пишем платеж в БД (долг = cost - sum(payments), отдельной таблицы долгов нет) ---
+        if db_session_id is not None and dlg.additional_payment > 0:
+            try:
+                from db_repo import add_payment
+                pid = add_payment(db_session_id, dlg.additional_payment)
+                print(f"[DB-pay] session={db_session_id} payment={dlg.additional_payment} pid={pid}")
+            except Exception as e:
+                QMessageBox.warning(self, "БД: платеж не записан", f"{e}\nВыезд из таблицы/файла все равно будет оформлен.")
+        elif db_session_id is None and self.db_ok:
+            print(f"[DB-pay] {plate}: сессии в БД нет (старая JSON-запись), платеж только на экране")
 
         # подтверждение — удаляем
         self.tableCars.removeRow(row)
