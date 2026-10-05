@@ -73,15 +73,18 @@ CREATE TABLE IF NOT EXISTS blacklist (
 -- Заполняем справочники по умолчанию
 -- ============================================
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name ON tariffs(name);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name ON discounts(name);
+
 INSERT INTO tariffs (name, hourly_rate) VALUES ('Стандартный', 100)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO discounts (name, percent) VALUES
     ('Нет', 0),
     ('Пенсионер', 10),
     ('Постоянный клиент', 20),
     ('Ветеран', 50)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (name) DO NOTHING;
 
 -- Создаём 100 парковочных мест (1..100)
 INSERT INTO parking_spots (number)

@@ -13,6 +13,15 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPalette, QColor
 
+try:
+    from db_config import test_connection
+    from db_init import init_database
+    _DB_AVAILABLE = True
+except ImportError:
+    _DB_AVAILABLE = False
+    test_connection = None
+    init_database = None
+
 
 HOURLY_RATE = 100
 TOTAL_PLACES = 100
@@ -219,9 +228,26 @@ class ParkingApp(QMainWindow):
         self.timer.timeout.connect(self.refresh_calculations)
         self.timer.start(60_000)
 
+        # --- п.1: подключение к PostgreSQL (JSON пока остается источником) ---
+        self.db_ok = False
+        self.db_message = "модуль БД недоступен"
+        if _DB_AVAILABLE:
+            try:
+                init_database()
+                ok, msg = test_connection()
+                self.db_ok = ok
+                self.db_message = "подключено" if ok else msg
+            except Exception as e:
+                self.db_ok = False
+                self.db_message = str(e)
+
         self.load_data_from_file()
         self.refresh_calculations()
         self.update_monitoring()
+        self.statusbar.showMessage(
+            f"{'БД: подключено' if self.db_ok else 'БД: нет связи (' + str(self.db_message)[:80] + '), работа в JSON'}",
+            6000
+        )
 
     # ---------- Grid ----------
     def _build_grid(self):

@@ -97,9 +97,21 @@ def init_database():
         """)
 
         # Заполняем справочники
+        # Чистим дубликаты прошлых запусков (баг ON CONFLICT без UNIQUE) — п.1
+        cur.execute("""
+            DELETE FROM tariffs a USING tariffs b
+            WHERE a.id > b.id AND a.name = b.name
+        """)
+        cur.execute("""
+            DELETE FROM discounts a USING discounts b
+            WHERE a.id > b.id AND a.name = b.name
+        """)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name ON tariffs(name)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name ON discounts(name)")
+
         cur.execute("""
             INSERT INTO tariffs (name, hourly_rate) VALUES ('Стандартный', 100)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (name) DO NOTHING
         """)
 
         cur.execute("""
@@ -108,7 +120,7 @@ def init_database():
                 ('Пенсионер', 10),
                 ('Постоянный клиент', 20),
                 ('Ветеран', 50)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (name) DO NOTHING
         """)
 
         # Создаём 100 парковочных мест
@@ -210,7 +222,7 @@ def init_database():
         """)
 
         cur.close()
-        print("База данных успешно инициализирована!")
+        print("База данных успешно инициализирована! Но МаТФей се роно питух")
         return True
 
     except Exception as e:
