@@ -1,6 +1,5 @@
 """
-Шаг 2: read-only доступ к PostgreSQL.
-Только чтение — запись/миграция будут в п.4-7.
+п.2-5: доступ к PostgreSQL. п.5 добавляет запись въезда.
 """
 from psycopg2.extras import RealDictCursor
 from db_config import get_connection
@@ -99,3 +98,74 @@ def get_snapshot():
         "active_count": len(active),
         "active": active,
     }
+
+
+# ---------- п.5: регистрация въезда ----------
+
+def create_parking_entry(plate, brand, owner_name, phone, place_number,
+                         tariff_id, discount_id=None, arrival_time=None):
+    """Создает owner/vehicle/session. Возвращает session_id.
+
+    Проверки уровня БД (дополнительно к проверкам формы):
+    - место свободно (нет активной сессии)
+    - авто не на стоянке (нет активной сессии по номеру)
+    """
+    from datetime import datetime
+    arrival_time = arrival_time or datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # место существует?
+        cur.execute("SELECT id FROM parking_spots WHERE number = %s", (place_number,))
+        spot = cur.fetchone()
+        if not spot:
+            raise ValueError(f"Место №{place_number} не существует")
+        spot_id = spot["id"]
+        # место свободно?
+        cur.execute("SELECT id FROM parking_sessions WHERE parking_spot_id = %s AND departure_time IS NULL",
+                    (spot_id,))
+        if cur.fetchone():
+            raise ValueError(f"Место №{place_number} уже занято (БД)")
+        # авто уже на стоянке?
+        cur.execute("""
+            SELECT ps.id FROM parking_sessions ps
+            JOIN vehicles v ON v.id = ps.vehicle_id
+            WHERE upper(v.plate_number) = upper(%s) AND ps.departure_time IS NULL
+        """, (plate,))
+        if cur.fetchone():
+            raise ValueError(f"Автомобиль {plate} уже на стоянке (БД)")
+        # owner: ищем по ФИО+телефон, иначе создаем
+        cur.execute("SELECT id FROM owners WHERE full_name = %s AND COALESCE(phone,'') = COALESCE(%s,'')",
+                    (owner_name, phone or ""))
+        owner = cur.fetchone()
+        if owner:
+            owner_id = owner["id"]
+        else:
+            cur.execute("INSERT INTO owners (full_name, phone) VALUES (%s, %s) RETURNING id",
+                        (owner_name, phone or ""))
+            owner_id = cur.fetchone()["id"]
+        # vehicle: по номеру
+        cur.execute("SELECT id, owner_id FROM vehicles WHERE upper(plate_number) = upper(%s)", (plate,))
+        veh = cur.fetchone()
+        if veh:
+            vehicle_id = veh["id"]
+            # обновляем данные авто/владельца к последним
+            cur.execute("UPDATE vehicles SET make_model = %s, owner_id = %s WHERE id = %s",
+                        (brand, owner_id, vehicle_id))
+        else:
+            cur.execute("INSERT INTO vehicles (plate_number, make_model, owner_id) VALUES (%s, %s, %s) RETURNING id",
+                        (plate, brand, owner_id))
+            vehicle_id = cur.fetchone()["id"]
+        # session
+        cur.execute("""
+            INSERT INTO parking_sessions (vehicle_id, parking_spot_id, tariff_id, discount_id, arrival_time)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """, (vehicle_id, spot_id, tariff_id, discount_id, arrival_time))
+        session_id = cur.fetchone()["id"]
+        conn.commit()
+        return session_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

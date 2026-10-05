@@ -486,6 +486,28 @@ class ParkingApp(QMainWindow):
 
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        # --- п.5: сначала пишем в БД (если подключена), потом в файл ---
+        db_session_id = None
+        if self.db_ok:
+            try:
+                from db_repo import create_parking_entry, get_snapshot
+                if not self.tariff_id:
+                    raise ValueError("Тариф не загружен из БД")
+                db_session_id = create_parking_entry(
+                    plate, brand, owner, phone, place,
+                    tariff_id=self.tariff_id,
+                    discount_id=self.current_discount_id(),
+                    arrival_time=time_str,
+                )
+                print(f"[DB-write] въезд: {plate} место {place} session={db_session_id}")
+                try:
+                    self.db_snapshot = get_snapshot()
+                except Exception:
+                    pass
+            except Exception as e:
+                QMessageBox.warning(self, "БД: въезд отклонен", f"{e}\nЗапись в файл не выполнена (чтобы не расходиться с БД).")
+                return
+
         # вставляем — длительность/стоимость посчитаются в refresh
         self.insert_row_to_table(plate, brand, owner, phone, place, time_str, discount)
 
@@ -501,7 +523,10 @@ class ParkingApp(QMainWindow):
         # перевести combo на следующее свободное
         self._select_next_free_place()
 
-        self.statusbar.showMessage(f"Автомобиль {plate} зарегистрирован на место №{place}", 4000)
+        msg = f"Автомобиль {plate} зарегистрирован на место №{place}"
+        if db_session_id is not None:
+            msg += f" (БД session={db_session_id})"
+        self.statusbar.showMessage(msg, 4000)
 
     def _select_next_free_place(self):
         occ = self._occupied_places()
