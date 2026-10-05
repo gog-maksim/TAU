@@ -107,11 +107,14 @@ def init_database():
             )
         """)
         cur.execute("""
-            DELETE FROM discounts a USING discounts b
-            WHERE a.id > b.id AND a.name = b.name
+            DELETE FROM discounts a
+            WHERE a.is_active = TRUE AND EXISTS (
+                SELECT 1 FROM discounts b
+                WHERE b.name = a.name AND b.is_active = TRUE AND b.id > a.id
+            )
         """)
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name ON discounts(name)")
-        # тарифы версионируются (старые inactive остаются): уникальность только среди активных
+        cur.execute("DROP INDEX IF EXISTS uq_discounts_name")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name_active ON discounts(name) WHERE is_active = TRUE")
         cur.execute("DROP INDEX IF EXISTS uq_tariffs_name")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name_active ON tariffs(name) WHERE is_active = TRUE")
 
@@ -126,7 +129,7 @@ def init_database():
                 ('Пенсионер', 10),
                 ('Постоянный клиент', 20),
                 ('Ветеран', 50)
-            ON CONFLICT (name) DO NOTHING
+            ON CONFLICT (name) WHERE is_active DO NOTHING
         """)
 
         # Создаём 100 парковочных мест

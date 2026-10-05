@@ -25,7 +25,7 @@ def get_tariffs(active_only=True):
 
 
 def get_discounts(active_only=True):
-    q = "SELECT id, name, percent FROM discounts"
+    q = "SELECT id, name, percent, is_active FROM discounts"
     if active_only:
         q += " WHERE is_active = TRUE"
     return _fetch_all(q + " ORDER BY id")
@@ -355,6 +355,8 @@ def add_discount(name, percent):
 
 
 def update_discount(discount_id, name, percent):
+    """Версионирование как у тарифов: старую деактивируем, создаём новую.
+    Прошлые стоянки ссылаются на старую запись — их расчёты не меняются."""
     name = (name or "").strip()
     if not name:
         raise ValueError("Название скидки пустое")
@@ -363,10 +365,13 @@ def update_discount(discount_id, name, percent):
         raise ValueError("Скидка должна быть 0–100%")
     conn = get_connection()
     try:
-        cur = conn.cursor()
-        cur.execute("UPDATE discounts SET name = %s, percent = %s WHERE id = %s",
-                    (name, percent, discount_id))
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("UPDATE discounts SET is_active = FALSE WHERE id = %s", (discount_id,))
+        cur.execute("INSERT INTO discounts (name, percent) VALUES (%s, %s) RETURNING id",
+                    (name, percent))
+        nid = cur.fetchone()["id"]
         conn.commit()
+        return nid
     except Exception:
         conn.rollback()
         raise
@@ -441,3 +446,53 @@ def get_full_history(limit=500):
         ORDER BY ps.id DESC
         LIMIT %s
     """, (limit,))
+
+
+# ---------- доп. логика: автоподстановка + атомарный выезд ----------
+
+def get_vehicle_by_plate(plate):
+    """Карточка авто для автоподстановки: марка/владелец/телефон + последняя скидка."""
+    rows = _fetch_all("""
+        SELECT v.plate_number AS plate, v.make_model AS brand,
+               o.full_name AS owner, o.phone AS phone,
+               (SELECT ps.discount_id FROM parking_sessions ps
+                WHERE ps.vehicle_id = v.id ORDER BY ps.id DESC LIMIT 1) AS last_discount_id
+        FROM vehicles v
+        JOIN owners o ON o.id = v.owner_id
+        WHERE upper(v.plate_number) = upper(%s)
+        LIMIT 1
+    """, (plate,))
+    return rows[0] if rows else None
+
+
+def checkout_session(session_id, amount, departure_time=None):
+    """Выезд одной транзакцией: платёж (если > 0) + закрытие сессии.
+    Возвращает dict(departure_time, total_cost, paid_total)."""
+    from datetime import datetime
+    departure_time = departure_time or datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if amount and int(amount) > 0:
+            cur.execute("INSERT INTO payments (session_id, amount) VALUES (%s, %s)",
+                        (session_id, int(amount)))
+        cur.execute("""
+            UPDATE parking_sessions
+            SET departure_time = %s
+            WHERE id = %s AND departure_time IS NULL
+            RETURNING departure_time, total_cost
+        """, (departure_time, session_id))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Сессия {session_id} уже закрыта или не существует")
+        cur.execute("SELECT COALESCE(SUM(amount),0) AS paid FROM payments WHERE session_id = %s",
+                    (session_id,))
+        paid = cur.fetchone()["paid"]
+        conn.commit()
+        return {"departure_time": row["departure_time"], "total_cost": row["total_cost"],
+                "paid_total": int(paid)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
