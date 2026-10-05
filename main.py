@@ -262,13 +262,56 @@ class ParkingApp(QMainWindow):
         self.tariff_id = None
         self.tariff_name = "Стандартный"
         self.reload_pricing_from_db()
+        # --- п.4: сверка занятых мест JSON vs БД (таблица пока из JSON) ---
+        self.refresh_db_comparison()
         if self.db_ok and self.db_snapshot is not None:
             db_info = (f"БД: подключено (тариф:{self.tariff_name} {self.HOURLY_RATE} ₽/ч, "
                        f"скидок:{self.combo_discount.count()} "
                        f"занято в БД:{len(self.db_snapshot['occupied'])}) • JSON: {self.tableCars.rowCount()} авто")
         else:
             db_info = f"БД: нет связи ({str(self.db_message)[:80]}), работа в JSON"
+        # режим просмотра БД: USE_DB_TABLE=1 — таблица строится из БД, JSON не трогаем
+        if os.getenv("USE_DB_TABLE") == "1" and self.db_ok:
+            self.load_table_from_db()
+            db_info += " • РЕЖИМ БД"
         self.statusbar.showMessage(db_info, 6000)
+
+    def refresh_db_comparison(self):
+        """п.4: сравнить занятые места в таблице (JSON) и в БД. Только лог, без перезаписи."""
+        if not self.db_ok or not self.db_snapshot:
+            return None
+        json_places = self._occupied_places()
+        db_places = set(self.db_snapshot.get("occupied", []))
+        only_json = sorted(json_places - db_places)
+        only_db = sorted(db_places - json_places)
+        print(f"[DB-compare] JSON занято={sorted(json_places)} БД занято={sorted(db_places)} "
+              f"только JSON={only_json} только БД={only_db}")
+        return {"json": json_places, "db": db_places,
+                "only_json": only_json, "only_db": only_db}
+
+    def load_table_from_db(self):
+        """п.4: перестроить таблицу и сетку из активных сессий БД. JSON-файл не меняется."""
+        from db_repo import get_active_sessions
+        active = get_active_sessions()
+        self.tableCars.setRowCount(0)
+        for car in active:
+            try:
+                disc = int(car.get("discount_percent", 0))
+            except Exception:
+                disc = 0
+            self.insert_row_to_table(
+                car.get("plate", ""),
+                car.get("brand", ""),
+                car.get("owner", ""),
+                car.get("phone", "") or "",
+                int(car.get("place", 1)),
+                car.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                disc,
+            )
+        self.refresh_calculations()
+        self.update_monitoring()
+        print(f"[DB-load] загружено из БД: {len(active)} авто, места={[c['place'] for c in active]}")
+        return active
 
     def reload_pricing_from_db(self):
         """п.3: подтянуть тариф и скидки из БД в виджеты. Возвращает True если из БД."""
