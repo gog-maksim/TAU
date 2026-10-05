@@ -97,9 +97,30 @@ def init_database():
         """)
 
         # Заполняем справочники
+        # Чистим дубликаты прошлых запусков (баг ON CONFLICT без UNIQUE) — п.1
+        # тарифы версионируются: трогаем только активные дубли, историю не удаляем
+        cur.execute("""
+            DELETE FROM tariffs a
+            WHERE a.is_active = TRUE AND EXISTS (
+                SELECT 1 FROM tariffs b
+                WHERE b.name = a.name AND b.is_active = TRUE AND b.id > a.id
+            )
+        """)
+        cur.execute("""
+            DELETE FROM discounts a
+            WHERE a.is_active = TRUE AND EXISTS (
+                SELECT 1 FROM discounts b
+                WHERE b.name = a.name AND b.is_active = TRUE AND b.id > a.id
+            )
+        """)
+        cur.execute("DROP INDEX IF EXISTS uq_discounts_name")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_discounts_name_active ON discounts(name) WHERE is_active = TRUE")
+        cur.execute("DROP INDEX IF EXISTS uq_tariffs_name")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tariffs_name_active ON tariffs(name) WHERE is_active = TRUE")
+
         cur.execute("""
             INSERT INTO tariffs (name, hourly_rate) VALUES ('Стандартный', 100)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (name) WHERE is_active DO NOTHING
         """)
 
         cur.execute("""
@@ -108,7 +129,7 @@ def init_database():
                 ('Пенсионер', 10),
                 ('Постоянный клиент', 20),
                 ('Ветеран', 50)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (name) WHERE is_active DO NOTHING
         """)
 
         # Создаём 100 парковочных мест
@@ -210,7 +231,7 @@ def init_database():
         """)
 
         cur.close()
-        print("База данных успешно инициализирована!")
+        print("База данных успешно инициализирована! Но МаТФей се роно питух")
         return True
 
     except Exception as e:
