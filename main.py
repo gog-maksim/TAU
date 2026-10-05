@@ -258,13 +258,61 @@ class ParkingApp(QMainWindow):
         self.load_data_from_file()
         self.refresh_calculations()
         self.update_monitoring()
+        # --- п.3: тариф и скидки из БД в интерфейс ---
+        self.tariff_id = None
+        self.tariff_name = "Стандартный"
+        self.reload_pricing_from_db()
         if self.db_ok and self.db_snapshot is not None:
-            db_info = (f"БД: подключено (тарифов:{len(self.db_snapshot['tariffs'])} "
-                       f"скидок:{len(self.db_snapshot['discounts'])} "
+            db_info = (f"БД: подключено (тариф:{self.tariff_name} {self.HOURLY_RATE} ₽/ч, "
+                       f"скидок:{self.combo_discount.count()} "
                        f"занято в БД:{len(self.db_snapshot['occupied'])}) • JSON: {self.tableCars.rowCount()} авто")
         else:
             db_info = f"БД: нет связи ({str(self.db_message)[:80]}), работа в JSON"
         self.statusbar.showMessage(db_info, 6000)
+
+    def reload_pricing_from_db(self):
+        """п.3: подтянуть тариф и скидки из БД в виджеты. Возвращает True если из БД."""
+        if not self.db_ok or not self.db_snapshot:
+            return False
+        tariffs = self.db_snapshot.get("tariffs", [])
+        discounts = self.db_snapshot.get("discounts", [])
+        if tariffs:
+            t = tariffs[0]  # пока один активный тариф
+            self.HOURLY_RATE = int(t["hourly_rate"])
+            self.tariff_id = int(t["id"])
+            self.tariff_name = str(t["name"])
+        if discounts:
+            cur_text = self.combo_discount.currentText()
+            m = re.search(r"(\d+)%", cur_text)
+            cur_pct = int(m.group(1)) if m else 0
+            self.combo_discount.blockSignals(True)
+            self.combo_discount.clear()
+            for d in discounts:
+                self.combo_discount.addItem(f"{d['name']} ({d['percent']}%)", userData=int(d["id"]))
+            restored = False
+            for i in range(self.combo_discount.count()):
+                if f"{cur_pct}%" in self.combo_discount.itemText(i):
+                    self.combo_discount.setCurrentIndex(i)
+                    restored = True
+                    break
+            if not restored:
+                self.combo_discount.setCurrentIndex(0)
+            self.combo_discount.blockSignals(False)
+        try:
+            self.label_info.setText(f"* — обязательные поля\nТариф: {self.tariff_name} — {self.HOURLY_RATE} ₽/час (из БД)")
+        except Exception:
+            pass
+        print(f"[DB-pricing] тариф={self.tariff_name} {self.HOURLY_RATE} ₽/ч (id={self.tariff_id}), "
+              f"скидок={self.combo_discount.count()}")
+        return True
+
+    def current_discount_id(self):
+        """id скидки из комбо для будущих записей в БД (п.5)."""
+        try:
+            data = self.combo_discount.itemData(self.combo_discount.currentIndex())
+            return int(data) if data is not None else None
+        except Exception:
+            return None
 
     # ---------- Grid ----------
     def _build_grid(self):
