@@ -472,7 +472,6 @@ class HistoryDialog(QDialog):
         self.setMinimumSize(900, 520)
         self.setStyleSheet(LIGHT_QSS)
         lay = QVBoxLayout(self)
-
         filt = QHBoxLayout()
         self.f_plate = QLineEdit()
         self.f_plate.setPlaceholderText("Номер")

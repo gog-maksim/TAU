@@ -231,7 +231,7 @@ def init_database():
         """)
 
         cur.close()
-        print("База данных успешно инициализирована! Но МаТФей се роно питух")
+        print("База данных успешно инициализирована!")
         return True
 
     except Exception as e:
