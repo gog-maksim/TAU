@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidgetItem, QMessageBox,
     QHeaderView, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QDialogButtonBox, QFrame, QGridLayout,
-    QToolBar, QLineEdit, QTableWidget, QDateEdit, QCheckBox, QComboBox
+    QToolBar, QLineEdit, QTableWidget, QDateEdit, QComboBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, QDate
 from PyQt6.QtGui import QPalette, QColor
@@ -24,6 +24,31 @@ except ImportError:
 
 HOURLY_RATE = 100
 TOTAL_PLACES = 100
+
+# Строгий формат госномера РФ: буква + 3 цифры + 2 буквы + пробел + регион (2–3 цифры).
+# Пример: А123ВС 777
+PLATE_RE = re.compile(r"^[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2} \d{2,3}$")
+PLATE_HINT = "Формат номера: буква, 3 цифры, 2 буквы, пробел, регион (например А123ВС 777)."
+# Латинские двойники в кириллицу (оператор мог вводить не в той раскладке)
+_LAT2CYR = str.maketrans({"A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н",
+                          "K": "К", "M": "М", "O": "О", "P": "Р", "T": "Т",
+                          "X": "Х", "Y": "У"})
+
+
+def normalize_plate(raw: str) -> str:
+    """Канонический вид: верхний регистр, двойники→кириллица, один пробел перед регионом."""
+    s = re.sub(r"\s+", "", (raw or "")).strip().upper().translate(_LAT2CYR)
+    m = re.match(r"^([АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2})(\d{2,3})$", s)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    return s
+
+
+def plate_error(plate: str) -> str | None:
+    """None если номер корректен, иначе текст ошибки."""
+    if not PLATE_RE.match(plate or ""):
+        return PLATE_HINT
+    return None
 
 
 LIGHT_QSS = """
@@ -186,7 +211,10 @@ def _make_table(cols):
     t = QTableWidget()
     t.setColumnCount(len(cols))
     t.setHorizontalHeaderLabels(cols)
-    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+    # ручное расширение/сужение колонок; последняя тянется на свободное место
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    t.horizontalHeader().setStretchLastSection(True)
+    t.horizontalHeader().setMinimumSectionSize(60)
     t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     t.verticalHeader().setVisible(False)
@@ -205,7 +233,7 @@ class BlacklistDialog(QDialog):
 
         form = QHBoxLayout()
         self.input_plate = QLineEdit()
-        self.input_plate.setPlaceholderText("Гос.номер")
+        self.input_plate.setPlaceholderText("А123ВС 777")
         self.input_reason = QLineEdit()
         self.input_reason.setPlaceholderText("Причина")
         btn_add = QPushButton("Добавить")
@@ -249,9 +277,10 @@ class BlacklistDialog(QDialog):
 
     def add_entry(self):
         from db_repo import add_blacklist_entry
-        plate = self.input_plate.text().strip().upper()
-        if len(plate) < 5:
-            QMessageBox.warning(self, "Ошибка", "Укажите гос.номер.")
+        plate = normalize_plate(self.input_plate.text())
+        err = plate_error(plate)
+        if err:
+            QMessageBox.warning(self, "Ошибка", err)
             return
         try:
             bid = add_blacklist_entry(plate, self.input_reason.text().strip())
@@ -469,7 +498,7 @@ class HistoryDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("История стоянок")
-        self.setMinimumSize(900, 520)
+        self.setMinimumSize(820, 500)
         self.setStyleSheet(LIGHT_QSS)
         lay = QVBoxLayout(self)
         filt = QHBoxLayout()
@@ -481,7 +510,6 @@ class HistoryDialog(QDialog):
         self.f_owner.setMaximumWidth(170)
         self.f_status = QComboBox()
         self.f_status.addItems(["Все", "Оплачено", "Долг"])
-        self.f_use_period = QCheckBox("Период")
         self.f_from = QDateEdit()
         self.f_from.setCalendarPopup(True)
         self.f_from.setDisplayFormat("yyyy-MM-dd")
@@ -490,18 +518,24 @@ class HistoryDialog(QDialog):
         self.f_to.setDisplayFormat("yyyy-MM-dd")
         self.f_from.setDate(QDate.currentDate().addMonths(-1))
         self.f_to.setDate(QDate.currentDate())
+        self.f_from.dateChanged.connect(self._apply_filter)
+        self.f_to.dateChanged.connect(self._apply_filter)
         btn_find = QPushButton("Найти")
         btn_find.clicked.connect(self._apply_filter)
+        btn_reset = QPushButton("Сбросить")
+        btn_reset.clicked.connect(self._reset_filters)
         for wdg in (self.f_plate, self.f_owner):
             wdg.textChanged.connect(self._apply_filter)
         self.f_status.currentTextChanged.connect(self._apply_filter)
         filt.addWidget(self.f_plate)
         filt.addWidget(self.f_owner)
         filt.addWidget(self.f_status)
-        filt.addWidget(self.f_use_period)
+        filt.addWidget(QLabel("с"))
         filt.addWidget(self.f_from)
+        filt.addWidget(QLabel("по"))
         filt.addWidget(self.f_to)
         filt.addWidget(btn_find)
+        filt.addWidget(btn_reset)
         lay.addLayout(filt)
 
         self.table = _make_table(["Сессия", "Номер", "Марка", "Владелец", "Место",
@@ -536,21 +570,40 @@ class HistoryDialog(QDialog):
             for c, v in enumerate(vals):
                 self.table.setItem(i, c, QTableWidgetItem(str(v)))
         print(f"[DB-history] показано {len(rows)} завершённых стоянок")
+        # период по умолчанию накрывает все загруженные записи — фильтр всегда рабочий
+        if self.table.rowCount():
+            days = sorted(self.table.item(r, 5).text()[:10] for r in range(self.table.rowCount()))
+            if days:
+                self.f_from.blockSignals(True)
+                self.f_to.blockSignals(True)
+                self.f_from.setDate(QDate.fromString(days[0], "yyyy-MM-dd"))
+                self.f_to.setDate(QDate.currentDate())
+                self.f_from.blockSignals(False)
+                self.f_to.blockSignals(False)
         self._apply_filter()
 
+    def _reset_filters(self):
+        self.f_plate.clear()
+        self.f_owner.clear()
+        self.f_status.setCurrentIndex(0)
+        self.reload()
+
     def _apply_filter(self):
-        plate = self.f_plate.text().strip().lower()
-        owner = self.f_owner.text().strip().lower()
+        # каждое поле ищет строго по своей колонке: номер→№, ФИО→владелец.
+        # ё и е считаем одной буквой.
+        def _norm(s):
+            return (s or "").strip().lower().replace("ё", "е")
+        plate = _norm(self.f_plate.text())
+        owner = _norm(self.f_owner.text())
         status = self.f_status.currentText()
-        use_period = self.f_use_period.isChecked()
         d_from = self.f_from.date().toString("yyyy-MM-dd")
         d_to = self.f_to.date().toString("yyyy-MM-dd")
         shown = 0
         for r in range(self.table.rowCount()):
             ok = True
-            if plate and plate not in self.table.item(r, 1).text().lower():
+            if plate and plate not in _norm(self.table.item(r, 1).text()):
                 ok = False
-            if ok and owner and owner not in self.table.item(r, 3).text().lower():
+            if ok and owner and owner not in _norm(self.table.item(r, 3).text()):
                 ok = False
             if ok and status != "Все":
                 debt_txt = self.table.item(r, 11).text()
@@ -559,10 +612,9 @@ class HistoryDialog(QDialog):
                     ok = False
                 if status == "Долг" and is_paid:
                     ok = False
-            if ok and use_period:
-                day = self.table.item(r, 5).text()[:10]
-                if not (d_from <= day <= d_to):
-                    ok = False
+            day = self.table.item(r, 5).text()[:10]
+            if not (d_from <= day <= d_to):
+                ok = False
             self.table.setRowHidden(r, not ok)
             shown += ok
         self.label_count.setText(f"Показано: {shown} из {self.table.rowCount()}")
@@ -603,22 +655,34 @@ class ParkingApp(QMainWindow):
         toolbar.addAction("Тариф").triggered.connect(self.open_tariff)
         toolbar.addAction("История").triggered.connect(self.open_history)
 
-        # Настройка таблицы
-        self.tableCars.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Настройка таблицы (колонки двигаются вручную, последняя тянется)
+        self.tableCars.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tableCars.horizontalHeader().setStretchLastSection(True)
+        self.tableCars.horizontalHeader().setMinimumSectionSize(60)
         self.tableCars.setSelectionBehavior(self.tableCars.SelectionBehavior.SelectRows)
         self.tableCars.setEditTriggers(self.tableCars.EditTrigger.NoEditTriggers)
         self.tableCars.verticalHeader().setVisible(False)
         self.tableCars.setAlternatingRowColors(True)
+        # левая панель уже 280px на маленьких экранах
+        try:
+            self.leftPanel.setMinimumWidth(280)
+        except Exception:
+            pass
 
         # Заполнить combo_place 1..100
         self.combo_place.clear()
         for i in range(1, TOTAL_PLACES + 1):
             self.combo_place.addItem(str(i))
 
+        # Телефон: сразу +7, только цифры (слот-форматтер ниже)
+        self.input_phone.setText("+7 ")
+        self.input_plate.setPlaceholderText("А123ВС 777")
+
         # Сигналы
         self.btn_add.clicked.connect(self.add_car)
         self.btn_remove.clicked.connect(self.remove_car)
         self.input_plate.editingFinished.connect(self._autofill_by_plate)
+        self.input_phone.textChanged.connect(self._format_phone_slot)
         self.combo_place.currentTextChanged.connect(self._highlight_grid_selection)
         self.tableCars.itemSelectionChanged.connect(self._on_table_select)
 
@@ -771,7 +835,9 @@ class ParkingApp(QMainWindow):
         self.place_buttons.clear()
         for place in range(1, TOTAL_PLACES + 1):
             btn = QPushButton(str(place))
-            btn.setFixedSize(28, 28)
+            # адаптивно: минимум 24px, дальше тянутся за окном
+            btn.setMinimumSize(24, 24)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             btn.setStyleSheet(self._style_for_place(place, occupied=False, selected=False))
             btn.clicked.connect(lambda _, p=place: self._on_grid_clicked(p))
             r = (place - 1) // 10
@@ -842,12 +908,31 @@ class ParkingApp(QMainWindow):
             dur = f"{d}д {rh}ч"
         return hours, cost, dur
 
+    def _format_phone_slot(self, text):
+        """Только цифры после +7, максимум 11 цифр всего. Пустое поле разрешено."""
+        digits = re.sub(r"\D", "", text)
+        if not digits:
+            new = ""
+        else:
+            core = digits
+            if core.startswith("8"):
+                core = "7" + core[1:]
+            elif not core.startswith("7"):
+                core = "7" + core
+            core = core[:11]
+            rest = core[1:]
+            new = "+7 " + rest if rest else "+7"
+        if new != text:
+            self.input_phone.blockSignals(True)
+            self.input_phone.setText(new)
+            self.input_phone.blockSignals(False)
+
     def _autofill_by_plate(self):
         """Автоподстановка: если авто уже есть в БД — заполнить пустые поля."""
         if not self.db_ok:
             return
-        plate = re.sub(r"\s+", " ", self.input_plate.text()).strip().upper()
-        if len(plate) < 5:
+        plate = normalize_plate(self.input_plate.text())
+        if plate_error(plate):
             return
         try:
             from db_repo import get_vehicle_by_plate
@@ -860,7 +945,7 @@ class ParkingApp(QMainWindow):
             self.input_brand.setText(card["brand"])
         if not self.input_owner.text().strip() and card.get("owner") and card["owner"] != "(ЧС)":
             self.input_owner.setText(card["owner"])
-        if not self.input_phone.text().strip() and card.get("phone"):
+        if not re.sub(r"\D", "", self.input_phone.text()) and card.get("phone"):
             self.input_phone.setText(card["phone"])
         if card.get("last_discount_id"):
             for i in range(self.combo_discount.count()):
@@ -871,7 +956,7 @@ class ParkingApp(QMainWindow):
 
     # ---------- Add ----------
     def add_car(self):
-        plate = re.sub(r"\s+", " ", self.input_plate.text()).strip().upper()
+        plate = normalize_plate(self.input_plate.text())
         brand = self.input_brand.text().strip()
         owner = re.sub(r"\s+", " ", self.input_owner.text()).strip()
         phone = self.input_phone.text().strip()
@@ -882,9 +967,10 @@ class ParkingApp(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Заполните обязательные поля: гос.номер, марка, ФИО, место.")
             return
 
-        # госномер: буквы (кириллица/латиница), цифры, пробел и дефис; минимум 5 символов
-        if len(plate) < 5 or not re.fullmatch(r"[А-ЯЁA-Z0-9 \-]+", plate):
-            QMessageBox.warning(self, "Ошибка", "Гос.номер некорректен: допускаются буквы, цифры, пробел и дефис.")
+        # госномер строго по формату РФ
+        err = plate_error(plate)
+        if err:
+            QMessageBox.warning(self, "Ошибка", err)
             return
 
         if len(brand) < 2:
@@ -911,10 +997,12 @@ class ParkingApp(QMainWindow):
             QMessageBox.warning(self, "Дубликат", f"Автомобиль с номером {plate} уже на стоянке.")
             return
 
-        # телефон — опционально, но если введен — допустимый формат (7–15 цифр)
+        # телефон опционален; если указан — ровно 11 цифр с +7 (буквы слот не пропускает)
         digits = re.sub(r"\D", "", phone)
-        if phone and not 7 <= len(digits) <= 15:
-            QMessageBox.warning(self, "Ошибка", "Номер телефона некорректен (нужно 7–15 цифр).")
+        if digits in ("", "7"):
+            phone = ""
+        elif len(digits) != 11 or not digits.startswith("7"):
+            QMessageBox.warning(self, "Ошибка", "Номер телефона: введите 10 цифр после +7.")
             return
 
         if not self.db_ok:
@@ -979,7 +1067,7 @@ class ParkingApp(QMainWindow):
         self.input_plate.clear()
         self.input_brand.clear()
         self.input_owner.clear()
-        self.input_phone.clear()
+        self.input_phone.setText("+7 ")
         # перевести combo на следующее свободное
         self._select_next_free_place()
 
